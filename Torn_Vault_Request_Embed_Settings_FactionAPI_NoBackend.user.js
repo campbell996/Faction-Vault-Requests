@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.20.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, refresh checks Discord final status, main panel update/refresh button, visible requester status sync embed links plus buttons for fulfilled/cancelled/timed-out, final status notifications and pending cleanup, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.21.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, clear notifications button, refresh checks Discord final status, main panel update/refresh button, visible requester status sync embed links plus buttons for fulfilled/cancelled/timed-out, final status notifications and pending cleanup, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -2244,11 +2244,12 @@
     updateRequestNotificationsPanel();
   }
 
-  function markRequestNotificationsRead() {
+  function clearRequestNotifications() {
     ensureRequestStores();
-    settings.requestNotifications = settings.requestNotifications.map(n => ({ ...n, read: true }));
+    settings.requestNotifications = [];
     saveSettings();
     updateRequestNotificationsPanel();
+    showToast('Request notifications cleared.', 'ok');
   }
 
   function storePendingRequest(record) {
@@ -4415,7 +4416,7 @@
         <div id="${APP}-requestNotifications"></div>
         <div class="${APP}-row">
           <button type="button" class="${APP}-btn good" id="${APP}-refreshRequestStatus">Update / Refresh Request Panel</button>
-          <button type="button" class="${APP}-btn" id="${APP}-markNoticesRead">Mark Notifications Read</button>
+          <button type="button" class="${APP}-btn" id="${APP}-clearNotices">Clear Notifications</button>
         </div>
         <p class="${APP}-note">
           Use <b>Update / Refresh Request Panel</b> after clicking a Discord status link, or any time you want to check whether pending requests were fulfilled, canceled, or timed out.
@@ -4495,7 +4496,7 @@
     $('make').addEventListener('click', makeRequest);
     $('settingsBtn').addEventListener('click', tryOpenSettings);
     $('refreshRequestStatus').addEventListener('click', () => refreshUserRequestPanel(true));
-    $('markNoticesRead').addEventListener('click', markRequestNotificationsRead);
+    $('clearNotices').addEventListener('click', clearRequestNotifications);
 
     $('refreshUser').addEventListener('click', () => prefillUserNameId(true));
   }

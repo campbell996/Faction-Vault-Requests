@@ -274,3 +274,10 @@ When clicked, it will:
 - refresh the pending request list and notification list
 
 If the original Discord request message was deleted by admins, the script does **not** guess the final status and does **not** repost it. The pending request is left alone unless a status-sync link is clicked or the request times out locally.
+
+
+## Clear Notifications Button
+
+The main request panel now has **Clear Notifications** instead of **Mark Notifications Read**.
+
+Clicking **Clear Notifications** deletes all saved request notifications from that browser and refreshes the notifications area immediately.
