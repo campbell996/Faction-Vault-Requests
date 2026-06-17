@@ -34,6 +34,7 @@ Click the button above to install or update the userscript through Tampermonkey.
 - If the RWPH launcher exists, this button sits beside it.
 - If the RWPH launcher is missing, this button still goes where RWPH would go, before/near Torn's **Faction Warfare** button.
 - Floating launcher is only an emergency fallback if Torn's header slot cannot be found.
+- API key is only required for the Settings panel, not for checking balance or sending requests.
 - Vault Request panel with:
   - Blank **Name and Torn ID** field for first-time users
   - **Prefill** button beside the Name and Torn ID box
@@ -56,8 +57,9 @@ Click the button above to install or update the userscript through Tampermonkey.
 - The Discord name is shown in request, timeout, and fulfilled embeds as `@discordname`.
 - Discord usernames are not real Discord mentions unless you use a Discord user ID. This script asks for Discord name only.
 - **Check Vault Balance** works without a Torn API key on the Torn faction controls/vault page when the filled-in Torn name/ID appears in a member row/card with that member's money balance.
-- If an API key is saved, the script tries the API first.
-- If no API key is saved, the script first scans the Torn faction controls page for that exact profile/ID and reads the balance from the same member row/card. It also supports labelled **Balance**, **Vault**, **Funds**, or **Available** columns/blocks.
+- The API key is only required to access the Settings panel.
+- Balance checking and request sending do **not** use the API key.
+- The script scans the Torn faction controls page for that exact profile/ID and reads the balance from the same member row/card. It also supports labelled **Balance**, **Vault**, **Funds**, or **Available** columns/blocks.
 - If the balance cannot be confirmed from the API or the visible page, the request is blocked.
 - Settings panel has two webhook URLs:
   - **Faction Request Webhook** for banker request embeds
@@ -95,7 +97,7 @@ Click the button above to install or update the userscript through Tampermonkey.
 3. Open Torn.
 4. Click **Vault Request**.
 5. Click **Settings**.
-6. Paste a Torn API key if you want API-based balance checking and settings access.
+6. Paste a Torn API key only to unlock the Settings panel. It is not needed for checking balances or sending requests.
 7. Paste your **Faction Request Webhook URL**. This is where banker request embeds are sent.
 8. Paste your **User Notice Webhook URL**. This is where timeout and fulfilled notices are sent.
 9. Pick or edit the banker request embedded message style.
@@ -143,9 +145,11 @@ All main panels support the RWPH-style controls:
 - Click the red **X** to close.
 - Size and position are remembered locally.
 
-## No-API Balance Checking
+## Balance Checking Without API
 
-Without an API key, the script can only check a vault balance if that balance is already visible somewhere on the current Torn page.
+The API key is only used to unlock the Settings panel. Balance checking and sending requests do not require an API key.
+
+The script can only check a vault balance if that balance is already visible somewhere on the current Torn page.
 
 The fallback now has a dedicated Torn faction controls scanner. It looks for the matching Torn name/ID or profile link first, then reads the money value from that same member row/card. It also supports clearly labelled **Balance**, **Vault**, **Funds**, or **Available** values.
 

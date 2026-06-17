@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.7.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.8.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, API key only required for Settings, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -1833,38 +1833,7 @@
   }
 
   async function getMemberVaultBalance(userId, options = {}) {
-    const key = cleanText(settings.apiKey);
     const user = options.user || { id: userId, name: '', display: String(userId || '') };
-    const errors = [];
-
-    if (key) {
-      try {
-        const data = await fetchFactionBalanceData(key);
-        const candidates = collectMemberBalanceCandidates(data, userId);
-
-        if (candidates.length) {
-          const best = candidates[0];
-
-          settings.lastBalanceUserId = String(userId);
-          settings.lastBalanceAmount = best.amount;
-          settings.lastBalanceCheckedAt = Date.now();
-          saveSettings();
-
-          return {
-            amount: best.amount,
-            formatted: formatMoney(best.amount),
-            source: `api:${best.path}`,
-            checkedAt: settings.lastBalanceCheckedAt
-          };
-        }
-
-        if (options.debug) console.log('[Vault Request] Balance response:', data);
-        errors.push('Could not find this member balance in the faction vault API response.');
-      } catch (err) {
-        console.warn('[Vault Request] API balance check failed, trying visible page fallback:', err);
-        errors.push(err.message || String(err));
-      }
-    }
 
     const visibleBalance = findVisibleVaultBalanceForUser(user);
 
@@ -1877,11 +1846,7 @@
       return visibleBalance;
     }
 
-    if (!key) {
-      throw new Error('Could not safely confirm vault balance without an API key. Open Torn faction controls/vault where this member\'s row shows their money balance, then click Check Vault Balance again.');
-    }
-
-    throw new Error(errors[0] || 'Could not confirm this member vault balance from the API or the visible Torn page.');
+    throw new Error('Could not safely confirm vault balance from the visible Torn faction controls/vault page. Open the page where this member row shows their money balance, then click Check Vault Balance again. API key is only needed for Settings.');
   }
 
   function getCachedBalanceForUser(userId) {
@@ -1943,9 +1908,7 @@
     }
 
     balanceCheckLocked = true;
-    updateBalanceStatus(settings.apiKey
-      ? 'Vault balance: checking with API...'
-      : 'Vault balance: checking Torn faction controls page for this member...', 'warn');
+    updateBalanceStatus('Vault balance: checking Torn faction controls page for this member...', 'warn');
 
     try {
       const balance = await getMemberVaultBalance(user.id, { user });
