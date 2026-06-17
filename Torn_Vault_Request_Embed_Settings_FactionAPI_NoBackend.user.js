@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.17.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, requester status sync links for fulfilled/cancelled/timed-out, final status notifications and pending cleanup, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.18.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, visible requester status sync embed links plus buttons for fulfilled/cancelled/timed-out, final status notifications and pending cleanup, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -1075,6 +1075,7 @@
     const title = noticeTemplateValue(settings.timeoutNotifyTitle, record).slice(0, 256) || 'Vault Request Timed Out';
     const description = noticeTemplateValue(settings.timeoutNotifyMessage, record).slice(0, 4000);
     const footer = noticeTemplateValue(settings.timeoutNotifyFooter, record).slice(0, 2048);
+    const syncUrl = buildRequesterStatusSyncUrl(record, 'timedout');
 
     return {
       username: 'Torn Vault Request Notice',
@@ -1093,7 +1094,8 @@
             { name: 'Requester Balance Info', value: balance.formatted || 'Not checked', inline: true },
             { name: 'Status', value: 'Timed out', inline: true },
             { name: 'Timed Out At', value: `<t:${Math.floor(expiredAt / 1000)}:F>`, inline: false },
-            { name: 'What To Do', value: 'Please make another vault request if you still need the money.', inline: false }
+            { name: 'What To Do', value: 'Please make another vault request if you still need the money.', inline: false },
+            { name: 'Update My Request Panel', value: `[Click here to remove this from pending and show the timeout notice](${syncUrl})`, inline: false }
           ],
           footer: { text: footer || 'Request timed out after 5 hours.' },
           timestamp: new Date().toISOString()
@@ -1107,7 +1109,7 @@
               type: 2,
               style: 5,
               label: 'Update My Request Panel',
-              url: buildRequesterStatusSyncUrl(record, 'timedout')
+              url: syncUrl
             }
           ]
         }
@@ -1123,6 +1125,7 @@
     const title = noticeTemplateValue(settings.fulfilledNotifyTitle, record, banker).slice(0, 256) || 'Vault Request Fulfilled';
     const description = noticeTemplateValue(settings.fulfilledNotifyMessage, record, banker).slice(0, 4000);
     const footer = noticeTemplateValue(settings.fulfilledNotifyFooter, record, banker).slice(0, 2048);
+    const syncUrl = buildRequesterStatusSyncUrl(record, 'fulfilled', banker);
 
     return {
       username: 'Torn Vault Request Notice',
@@ -1139,7 +1142,8 @@
             ...(record.discordName ? [{ name: 'Discord Name', value: escapeDiscordKeepAt(formatDiscordName(record.discordName)), inline: true }] : []),
             { name: 'Amount', value: amount.formatted || '$0', inline: true },
             { name: 'Banker', value: escapeDiscordKeepAt(formatTornMention(banker)), inline: true },
-            { name: 'Completed At', value: `<t:${Math.floor(completedAt / 1000)}:F>`, inline: false }
+            { name: 'Completed At', value: `<t:${Math.floor(completedAt / 1000)}:F>`, inline: false },
+            { name: 'Update My Request Panel', value: `[Click here to remove this from pending and show the fulfilled notice](${syncUrl})`, inline: false }
           ],
           footer: { text: footer || 'Completed by faction banker.' },
           timestamp: new Date().toISOString()
@@ -1153,7 +1157,7 @@
               type: 2,
               style: 5,
               label: 'Update My Request Panel',
-              url: buildRequesterStatusSyncUrl(record, 'fulfilled', banker)
+              url: syncUrl
             }
           ]
         }
@@ -3773,6 +3777,7 @@
     const balance = record.balance || { formatted: 'Not checked' };
     const cancelledAt = Number(record.cancelledAt || Date.now());
     const discordName = normalizeDiscordName(record.discordName || '');
+    const syncUrl = buildRequesterStatusSyncUrl(record, 'cancelled', banker, reason);
 
     return {
       username: 'Torn Vault Request',
@@ -3792,7 +3797,8 @@
             { name: 'Status', value: 'Canceled', inline: true },
             { name: 'Reason', value: escapeDiscord(reason), inline: false },
             { name: 'Canceled By', value: escapeDiscord(formatTornMention(banker)), inline: true },
-            { name: 'Canceled At', value: `<t:${Math.floor(cancelledAt / 1000)}:F>`, inline: false }
+            { name: 'Canceled At', value: `<t:${Math.floor(cancelledAt / 1000)}:F>`, inline: false },
+            { name: 'Update My Request Panel', value: `[Click here to remove this from pending and show the canceled notice](${syncUrl})`, inline: false }
           ],
           footer: { text: 'Canceled because available vault funds were not enough.' },
           timestamp: new Date(cancelledAt).toISOString()
@@ -3840,7 +3846,7 @@
               type: 2,
               style: 5,
               label: 'Update My Request Panel',
-              url: buildRequesterStatusSyncUrl(record, 'cancelled', banker, reason)
+              url: syncUrl
             }
           ]
         }

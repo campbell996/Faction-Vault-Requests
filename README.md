@@ -234,3 +234,13 @@ To solve this without a backend, fulfilled, canceled, and timed-out user notice 
 - saves the final status locally so the same notice is not applied twice
 
 For fully automatic cross-user panel updates without clicking the sync button, this project would need a small shared backend or Discord bot.
+
+
+## Visible Status Sync Link
+
+Some Discord webhook/client setups may not show link buttons. Status notice embeds now include both:
+
+- an **Update My Request Panel** button when Discord displays webhook components
+- a normal visible embed link named **Update My Request Panel**
+
+If the button is missing, the requester can click the visible embed link instead. It performs the same update: removes the request from pending and adds the final fulfilled/canceled/timed-out notification locally.
