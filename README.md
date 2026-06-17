@@ -24,17 +24,18 @@ Click the button above to install or update the userscript through Tampermonkey.
 
 - Clean RWPH-style dark panels.
 - Panel headers now stay fixed at the top while only the body content scrolls.
+- All panels save their size and position to the user's browser.
 - All script panels use RWPH-style controls:
   - drag the top bar to move
   - resize from the bottom-right grip
   - scroll inside the panel
   - red **X** close button
-  - saved panel size/position
+  - saved panel size/position in the user's browser
 - Launcher button uses the RWPH header slot.
 - If the RWPH launcher exists, this button sits beside it.
 - If the RWPH launcher is missing, this button still goes where RWPH would go, before/near Torn's **Faction Warfare** button.
 - Floating launcher is only an emergency fallback if Torn's header slot cannot be found.
-- API key is only required for the Settings panel, not for checking balance or sending requests.
+- API key is only required for Settings and the banker-side current balance panel, not for requesters sending requests.
 - Vault Request panel with:
   - Blank **Name and Torn ID** field for first-time users
   - **Prefill** button beside the Name and Torn ID box
@@ -56,10 +57,12 @@ Click the button above to install or update the userscript through Tampermonkey.
 - Saved request info is stored per Torn ID in this browser.
 - The Discord name is shown in request, timeout, and fulfilled embeds as `@discordname`.
 - Discord usernames are not real Discord mentions unless you use a Discord user ID. This script asks for Discord name only.
-- **Check Vault Balance** works without a Torn API key on the Torn faction controls/vault page when the filled-in Torn name/ID appears in a member row/card with that member's money balance.
+- The requester panel no longer has a **Check Vault Balance** button.
+- Requests are not blocked by balance; bankers approve or deny manually.
+- When a banker clicks **Open Faction Controls** in Discord, the banker panel opens and checks the requester’s current faction vault balance using a Torn API key.
 - The API key is only required to access the Settings panel.
-- Balance checking and request sending do **not** use the API key.
-- The script scans the Torn faction controls page for that exact profile/ID and reads the balance from the same member row/card. It also supports labelled **Balance**, **Vault**, **Funds**, or **Available** columns/blocks.
+- Requesters do **not** check balance and do **not** need an API key to send requests.
+- When the banker opens faction controls from the Discord button, the banker panel can use a Torn API key with faction access to show the requester’s current faction vault balance. It also supports labelled **Balance**, **Vault**, **Funds**, or **Available** columns/blocks.
 - If the balance cannot be confirmed from the API or the visible page, the request is blocked.
 - Settings panel has two webhook URLs:
   - **Faction Request Webhook** for banker request embeds
@@ -118,12 +121,12 @@ Click the button above to install or update the userscript through Tampermonkey.
    - `1m` sends as `$1,000,000`
    - `1b` sends as `$1,000,000,000`
    - `1t` sends as `$1,000,000,000,000`
-7. Click **Check Vault Balance**.
+7. Click **Make Request**.
 8. If you do not have an API key saved, make sure the Torn faction/vault/controls page showing your balance is open/visible, then click **Check Vault Balance** again.
-9. Click **Make Request**.
-10. The script checks your vault balance again before sending.
-11. If your request is higher than your available vault balance, it will be blocked.
-12. If the request is allowed, it sends a Discord embed to the faction request webhook channel.
+9. A banker clicks **Open Faction Controls** from Discord.
+10. The banker panel checks your current faction vault balance using the banker’s API key.
+11. If the request is higher than your available vault balance, the banker can deny it manually.
+12. If the request is okay, the banker manually pays from Torn faction controls.
 13. The request expires after **5 hours**.
 14. If the request times out, the User Notice Webhook sends a timeout notice telling you to make another request.
 15. A leader/banker clicks the Discord button to open Torn faction controls, checks the details, then manually clicks **Give Money** and **Confirm**.
@@ -143,11 +146,19 @@ All main panels support the RWPH-style controls:
 - Drag the bottom-right grip to resize the panel.
 - Scroll inside the panel body when content is long. The header/logo/close bar stays at the top.
 - Click the red **X** to close.
-- Size and position are remembered locally.
+- Size and position are saved locally in the user's browser for each panel.
 
-## Balance Checking Without API
+## Banker Balance Panel
 
-The API key is only used to unlock the Settings panel. Balance checking and sending requests do not require an API key.
+The requester panel does not check or block vault balances.
+
+When a banker clicks **Open Faction Controls** in the Discord request embed, the script opens the completion panel on Torn. That panel shows the requested user and amount, then checks the requester’s current faction vault balance using a Torn API key with faction access.
+
+The banker can then approve or deny manually. The script does not auto-pay, auto-confirm, or auto-deny.
+
+## Removed Requester Balance Checking
+
+Requester balance checking was removed. Requesters can send requests without an API key and without running a balance check.
 
 The script can only check a vault balance if that balance is already visible somewhere on the current Torn page.
 

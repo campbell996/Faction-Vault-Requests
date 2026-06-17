@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.8.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, API key only required for Settings, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.10.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -820,7 +820,7 @@
       fvrUserId: user.id || '',
       fvrAmountRaw: amount.raw || '',
       fvrAmountFormatted: amount.formatted || '',
-      fvrBalanceFormatted: balance?.formatted || '',
+      fvrBalanceFormatted: balance?.formatted || 'Banker check required',
       fvrDiscordName: normalizeDiscordName(request.discordName || settings.discordName || ''),
       fvrCreatedAt: String(request.createdAt || Date.now()),
       fvrExpiresAt: String(expiresAt)
@@ -842,7 +842,7 @@
     const fields = [
       { name: 'User', value: escapeDiscord(user.display || `${user.name} [${user.id}]`), inline: true },
       { name: 'Amount Requested', value: amount.formatted, inline: true },
-      { name: 'Verified Vault Balance', value: balance?.formatted || 'Not checked', inline: true },
+      { name: 'Balance Check', value: 'Banker panel checks current faction vault balance after opening controls.', inline: false },
       { name: 'Status', value: request.status || 'Pending', inline: true },
       { name: 'Expires', value: `<t:${expiresUnix}:R>`, inline: true },
       { name: 'Expires At', value: `<t:${expiresUnix}:F>`, inline: false },
@@ -913,7 +913,7 @@
             { name: 'User', value: escapeDiscord(user.display || `${user.name} [${user.id}]`), inline: true },
             ...(discordName ? [{ name: 'Discord Name', value: escapeDiscordKeepAt(formatDiscordName(discordName)), inline: true }] : []),
             { name: 'Amount Requested', value: amount.formatted, inline: true },
-            { name: 'Verified Vault Balance', value: balance.formatted || 'Not checked', inline: true },
+            { name: 'Requester Balance Info', value: balance.formatted || 'Not checked', inline: true },
             { name: 'Status', value: 'Expired', inline: true },
             { name: 'Expired At', value: `<t:${Math.floor(expiredAt / 1000)}:F>`, inline: false },
             { name: 'Next Step', value: 'The user needs to make another request if they still need funds.', inline: false }
@@ -978,7 +978,7 @@
             { name: 'User', value: escapeDiscordKeepAt(formatTornMention(user)), inline: true },
             ...(record.discordName ? [{ name: 'Discord Name', value: escapeDiscordKeepAt(formatDiscordName(record.discordName)), inline: true }] : []),
             { name: 'Amount Requested', value: amount.formatted || '$0', inline: true },
-            { name: 'Verified Vault Balance', value: balance.formatted || 'Not checked', inline: true },
+            { name: 'Requester Balance Info', value: balance.formatted || 'Not checked', inline: true },
             { name: 'Status', value: 'Timed out', inline: true },
             { name: 'Timed Out At', value: `<t:${Math.floor(expiredAt / 1000)}:F>`, inline: false },
             { name: 'What To Do', value: 'Please make another vault request if you still need the money.', inline: false }
@@ -1045,7 +1045,7 @@
             { name: 'User', value: escapeDiscordKeepAt(formatTornMention(user)), inline: true },
             ...(record.discordName ? [{ name: 'Discord Name', value: escapeDiscordKeepAt(formatDiscordName(record.discordName)), inline: true }] : []),
             { name: 'Amount Requested', value: amount.formatted || '$0', inline: true },
-            { name: 'Verified Vault Balance', value: balance.formatted || 'Not checked', inline: true },
+            { name: 'Requester Balance Info', value: balance.formatted || 'Not checked', inline: true },
             { name: 'Status', value: 'Fulfilled', inline: true },
             { name: 'Banker', value: escapeDiscordKeepAt(formatTornMention(banker)), inline: true },
             { name: 'Completed At', value: `<t:${Math.floor(completedAt / 1000)}:F>`, inline: false }
@@ -2150,13 +2150,24 @@
 
   function closePanel(id) {
     const el = document.getElementById(`${APP}-${id}`);
-    if (el) el.remove();
+    if (el) {
+      if (el.classList?.contains(`${APP}-panel`)) {
+        savePanelState(el, getPanelStateKey(el));
+      }
+      el.remove();
+    }
   }
 
   function closeFloatingPanels(except) {
-    for (const id of ['requestPanel', 'settingsGate', 'settingsPanel']) {
+    for (const id of ['requestPanel', 'settingsGate', 'settingsPanel', 'fulfillPanel']) {
       if (id !== except) closePanel(id);
     }
+  }
+
+  function saveAllOpenPanelStates() {
+    document.querySelectorAll(`.${APP}-panel`).forEach(panel => {
+      savePanelState(panel, getPanelStateKey(panel));
+    });
   }
 
   function isVisibleElement(el) {
@@ -2343,19 +2354,23 @@
     const saved = ensurePanelPositions()[key];
     if (!saved) return;
 
+    const pad = 8;
+    const maxWidth = Math.max(320, window.innerWidth - (pad * 2));
+    const maxHeight = Math.max(260, window.innerHeight - (pad * 2));
+
     if (Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
-      panel.style.left = `${Math.max(0, saved.left)}px`;
-      panel.style.top = `${Math.max(0, saved.top)}px`;
+      panel.style.left = `${Math.max(pad, Math.min(saved.left, window.innerWidth - pad))}px`;
+      panel.style.top = `${Math.max(pad, Math.min(saved.top, window.innerHeight - pad))}px`;
       panel.style.right = 'auto';
       panel.style.bottom = 'auto';
     }
 
     if (Number.isFinite(saved.width)) {
-      panel.style.width = `${Math.max(300, saved.width)}px`;
+      panel.style.width = `${Math.max(320, Math.min(saved.width, maxWidth))}px`;
     }
 
     if (Number.isFinite(saved.height)) {
-      panel.style.height = `${Math.max(220, saved.height)}px`;
+      panel.style.height = `${Math.max(260, Math.min(saved.height, maxHeight))}px`;
       panel.style.maxHeight = 'none';
     }
   }
@@ -2364,13 +2379,16 @@
     if (!panel) return;
 
     const rect = panel.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+
     const positions = ensurePanelPositions();
 
     positions[key] = {
       left: Math.round(rect.left),
       top: Math.round(rect.top),
       width: Math.round(rect.width),
-      height: Math.round(rect.height)
+      height: Math.round(rect.height),
+      savedAt: Date.now()
     };
 
     saveSettings();
@@ -2574,6 +2592,29 @@
     if (closeBtn) {
       closeBtn.addEventListener('click', () => savePanelState(panel, key), { once: true });
     }
+  }
+
+  function ensureAllPanelsInteractive() {
+    document.querySelectorAll(`.${APP}-panel`).forEach(panel => {
+      if (panel.dataset.tvresInteractive !== '1') {
+        makePanelMoveResize(panel);
+      }
+    });
+  }
+
+  function startPanelStateWatcher() {
+    if (window.__TVRESPanelStateWatcherStarted) return;
+    window.__TVRESPanelStateWatcherStarted = true;
+
+    window.addEventListener('beforeunload', saveAllOpenPanelStates);
+    window.addEventListener('pagehide', saveAllOpenPanelStates);
+
+    const observer = new MutationObserver(() => {
+      clearTimeout(observer._timer);
+      observer._timer = setTimeout(ensureAllPanelsInteractive, 100);
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   function showToast(message, type = 'ok') {
@@ -3205,12 +3246,6 @@
 
     updateAmountPreview();
     updateRequestNotificationsPanel();
-    updateBalanceDisplay();
-
-    const user = parseUserDisplay($('user')?.value || '');
-    if (user.id) {
-      refreshBalanceForCurrentUser(false);
-    }
   }
 
   function saveRequestFromPanel() {
@@ -3262,14 +3297,16 @@
     const btn = $('make');
     if (btn) {
       btn.disabled = true;
-      btn.textContent = 'Checking balance...';
+      btn.textContent = 'Sending...';
     }
 
     try {
-      const balance = await verifyRequestAgainstVaultBalance(user, amount);
-      updateBalanceDisplay();
-
-      if (btn) btn.textContent = 'Sending...';
+      const balance = {
+        amount: null,
+        formatted: 'Banker check required',
+        source: 'banker-panel-api-check',
+        checkedAt: 0
+      };
 
       const requestId = makeRequestId(user.id, amount.raw);
       const expiresAt = Date.now() + REQUEST_TIMEOUT_MS;
@@ -3302,7 +3339,7 @@
 
       addRequestNotification(
         'sent',
-        `Your ${amount.formatted} vault request was sent to the faction Discord channel. It expires in 5 hours.`,
+        `Your ${amount.formatted} vault request was sent to the faction Discord channel for banker review. It expires in 5 hours.`,
         requestId
       );
 
@@ -3312,12 +3349,10 @@
       settings.amountInput = amount.formatted;
       saveSettings();
       updateAmountPreview();
-      updateBalanceDisplay();
       updateRequestNotificationsPanel();
     } catch (err) {
       console.error('[Torn Vault Request Maker]', err);
       showToast(err.message || 'Request failed.', 'bad');
-      updateBalanceDisplay();
     } finally {
       setTimeout(() => {
         submitLocked = false;
@@ -3380,6 +3415,89 @@
     return '';
   }
 
+  function getBankerBalanceApiKeyFromPanel() {
+    const inputValue = cleanText($('bankerBalanceApiKey')?.value || '');
+    if (inputValue && inputValue !== '********') return inputValue;
+    return cleanText(settings.apiKey || '');
+  }
+
+  async function fetchRequesterBalanceByApi(apiKey, userId) {
+    const key = cleanText(apiKey);
+    const id = String(userId || '').replace(/[^\d]/g, '');
+
+    if (!id) throw new Error('Missing requester Torn ID.');
+    if (!key || key.length < 8) throw new Error('Enter a Torn API key with faction access to check this member balance.');
+
+    const data = await fetchFactionBalanceData(key);
+    const candidates = collectMemberBalanceCandidates(data, id);
+
+    if (!candidates.length) {
+      throw new Error('Could not find this requester in the faction balance API response.');
+    }
+
+    const best = candidates[0];
+
+    return {
+      amount: best.amount,
+      formatted: formatMoney(best.amount),
+      source: `api:${best.path}`,
+      checkedAt: Date.now()
+    };
+  }
+
+  function setBankerBalanceStatus(message, type = 'warn') {
+    const el = $('bankerBalanceStatus');
+    if (!el) return;
+
+    el.textContent = message;
+    el.className = `${APP}-preview ${type === 'ok' ? 'ok' : 'warn'}`;
+  }
+
+  async function checkBankerRequesterBalance(record, params = {}, showToastOnSuccess = false) {
+    const userId = String(record?.user?.id || params.userId || '').replace(/[^\d]/g, '');
+    const apiKey = getBankerBalanceApiKeyFromPanel();
+    const btn = $('checkBankerBalance');
+
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Checking...';
+    }
+
+    setBankerBalanceStatus('Checking requester current faction vault balance with API...', 'warn');
+
+    try {
+      const balance = await fetchRequesterBalanceByApi(apiKey, userId);
+
+      if ($('bankerBalanceApiKey')) {
+        const entered = cleanText($('bankerBalanceApiKey').value || '');
+        if (entered && entered !== '********') {
+          settings.apiKey = entered;
+          saveSettings();
+          $('bankerBalanceApiKey').value = '********';
+        }
+      }
+
+      setBankerBalanceStatus(`Requester current faction vault balance: ${balance.formatted}`, 'ok');
+
+      if (record) {
+        record.balance = balance;
+      }
+
+      if (showToastOnSuccess) showToast(`Requester current balance: ${balance.formatted}`, 'ok');
+      return balance;
+    } catch (err) {
+      console.warn('[Vault Request] Banker API balance check failed:', err);
+      setBankerBalanceStatus(err.message || 'Could not check requester balance.', 'warn');
+      if (showToastOnSuccess) showToast(err.message || 'Could not check requester balance.', 'bad');
+      return null;
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Check Current Balance';
+      }
+    }
+  }
+
   async function markCurrentRequestFulfilled(record, banker) {
     const completedRecord = {
       ...record,
@@ -3439,6 +3557,26 @@
         <div class="${APP}-cardTitle">Request From Discord</div>
         <p class="${APP}-note"><b>User:</b> ${escapeHtml(userDisplay)}</p>
         <p class="${APP}-note"><b>Amount:</b> ${escapeHtml(amountDisplay)}</p>\n        ${discordDisplay ? `<p class="${APP}-note"><b>Discord:</b> ${escapeHtml(formatDiscordName(discordDisplay))}</p>` : ``}
+      </div>
+
+      <div class="${APP}-card">
+        <div class="${APP}-cardTitle">Requester Current Faction Vault Balance</div>
+        <div id="${APP}-bankerBalanceStatus" class="${APP}-preview warn">Opening balance checker...</div>
+
+        <label for="${APP}-bankerBalanceApiKey">Banker Torn API key for balance check</label>
+        <input id="${APP}-bankerBalanceApiKey" type="password" placeholder="Paste API key with faction access" autocomplete="off" value="${settings.apiKey ? '********' : ''}" />
+
+        <p class="${APP}-note">
+          This checks the requested user’s current faction vault balance from the Torn API. This does not auto-pay or auto-deny anything.
+        </p>
+
+        <div class="${APP}-row">
+          <button type="button" class="${APP}-btn" id="${APP}-checkBankerBalance">Check Current Balance</button>
+        </div>
+      </div>
+
+      <div class="${APP}-card">
+        <div class="${APP}-cardTitle">Complete Request</div>
 
         <label for="${APP}-bankerName">Banker name and Torn ID</label>
         <input id="${APP}-bankerName" type="text" placeholder="Banker_Name [123456]" value="${escapeHtml(getCurrentBankerDisplay())}" autocomplete="off" />
@@ -3458,11 +3596,15 @@
     document.body.appendChild(panel);
     makePanelMoveResize(panel);
 
-    $('closeFulfill').addEventListener('click', () => panel.remove());
+    $('closeFulfill').addEventListener('click', () => closePanel('fulfillPanel'));
 
     $('refreshBanker').addEventListener('click', () => {
       $('bankerName').value = getCurrentBankerDisplay();
     });
+
+    $('checkBankerBalance').addEventListener('click', () => checkBankerRequesterBalance(record, params, true));
+
+    setTimeout(() => checkBankerRequesterBalance(record, params, false), 350);
 
     $('markFulfilled').addEventListener('click', async () => {
       const banker = parseBankerDisplay($('bankerName')?.value || getCurrentBankerDisplay());
@@ -3479,7 +3621,7 @@
       try {
         await markCurrentRequestFulfilled(record, banker);
         showToast('Fulfilled notice sent to the user notice webhook.', 'ok');
-        panel.remove();
+        closePanel('fulfillPanel');
       } catch (err) {
         console.error('[Vault Request] Mark fulfilled failed:', err);
         showToast(err.message || 'Could not send fulfilled notice.', 'bad');
@@ -3549,8 +3691,6 @@
       }
 
       updateAmountPreview();
-      updateBalanceDisplay();
-      debounceBalanceCheck();
       if (showResultToast) showToast(detected.hasRealName ? (profile ? 'Torn name/ID prefilled and your saved info loaded.' : 'Torn name and ID prefilled. Fill the rest once and it will be remembered for this user.') : 'Torn ID was detected, but Torn name was not visible. Type your Torn name before the ID once and it will be remembered.', detected.hasRealName ? 'ok' : 'warn');
       return true;
     }
@@ -3590,13 +3730,6 @@
         <input id="${APP}-amount" type="text" inputmode="decimal" placeholder="1000000, 1m, 1b, or 1t" autocomplete="off" />
         <div id="${APP}-amountPreview" class="${APP}-preview warn">Enter a request amount.</div>
 
-        <label>Faction vault balance</label>
-        <div id="${APP}-balanceStatus" class="${APP}-preview warn">Vault balance: not checked yet.</div>
-
-        <div class="${APP}-row">
-          <button type="button" class="${APP}-btn" id="${APP}-refreshBalance">Check Vault Balance</button>
-        </div>
-
         <button type="button" id="${APP}-make">Make Request</button>
       </div>
 
@@ -3624,10 +3757,10 @@
           2. Type the amount you want from your faction vault balance. You can use <b>1000000</b>, <b>1m</b>, <b>1b</b>, or <b>1t</b>.
         </p>
         <p class="${APP}-note">
-          3. Click <b>Check Vault Balance</b> if you want to see your available balance first. The script also checks again when you click <b>Make Request</b>.
+          3. Click <b>Make Request</b>. The request is sent to the faction Discord channel for a banker to review.
         </p>
         <p class="${APP}-note">
-          4. Click <b>Make Request</b>. If the amount is inside your available vault balance, it sends the request to the faction Discord channel.
+          4. When the banker opens faction controls from Discord, their banker panel checks your current faction vault balance so they can approve or deny manually.
         </p>
         <p class="${APP}-note">
           5. The request stays pending for <b>5 hours</b>. If it times out, this panel will show a notification and you need to make another request.
@@ -3644,7 +3777,7 @@
       </div>
 
       <p class="${APP}-note">
-        The script checks your faction vault balance before sending. It uses the API key when available, or the visible Torn vault/balance page when no API key is saved. If the amount is higher than your available balance, the request is blocked.
+        This panel does not check or block by vault balance. Bankers check the requester’s current faction vault balance from the banker panel after opening faction controls.
       </p>
     `;
 
@@ -3652,7 +3785,7 @@
     makePanelMoveResize(panel);
     fillRequestPanelValues();
 
-    $('closeRequest').addEventListener('click', () => panel.remove());
+    $('closeRequest').addEventListener('click', () => closePanel('requestPanel'));
 
     $('prefillUserInline').addEventListener('click', () => prefillUserNameId(true));
 
@@ -3660,7 +3793,6 @@
       settings.amountInput = $('amount').value;
       saveRequestFromPanel();
       updateAmountPreview();
-      updateBalanceDisplay();
     });
 
     $('discordName').addEventListener('input', () => {
@@ -3673,8 +3805,6 @@
     $('user').addEventListener('input', () => {
       settings.userDisplay = cleanText($('user').value);
       saveRequestFromPanel();
-      updateBalanceDisplay();
-      debounceBalanceCheck();
     });
 
     $('user').addEventListener('change', () => {
@@ -3684,13 +3814,10 @@
       settings.lastBalanceAmount = null;
       settings.lastBalanceCheckedAt = 0;
       saveSettings();
-      updateBalanceDisplay();
-      debounceBalanceCheck();
     });
 
     $('make').addEventListener('click', makeRequest);
     $('settingsBtn').addEventListener('click', tryOpenSettings);
-    $('refreshBalance').addEventListener('click', () => refreshBalanceForCurrentUser(true));
     $('markNoticesRead').addEventListener('click', markRequestNotificationsRead);
 
     $('refreshUser').addEventListener('click', () => prefillUserNameId(true));
@@ -3734,7 +3861,7 @@
     document.body.appendChild(panel);
     makePanelMoveResize(panel);
 
-    $('closeGate').addEventListener('click', () => panel.remove());
+    $('closeGate').addEventListener('click', () => closePanel('settingsGate'));
 
     $('clearApi').addEventListener('click', () => {
       settings.apiKey = '';
@@ -4059,7 +4186,7 @@
     document.body.appendChild(panel);
     makePanelMoveResize(panel);
 
-    $('closeSettings').addEventListener('click', () => panel.remove());
+    $('closeSettings').addEventListener('click', () => closePanel('settingsPanel'));
 
     for (const id of Object.keys(PRESETS)) {
       const btn = $(`preset-${id}`);
@@ -4091,7 +4218,7 @@
     $('lockSettings').addEventListener('click', () => {
       settings.settingsUnlockedUntil = 0;
       saveSettings();
-      panel.remove();
+      closePanel('settingsPanel');
       showToast('Settings locked.', 'ok');
     });
 
@@ -4119,6 +4246,7 @@
   function init() {
     addStyles();
     addLauncher();
+    startPanelStateWatcher();
     startLauncherWatcher();
     startRequestTimeoutWatcher();
     setTimeout(openFulfilledPanelIfNeeded, 1500);
