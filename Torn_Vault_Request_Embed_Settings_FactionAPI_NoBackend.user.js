@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.16.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, final status notifications and pending cleanup, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.17.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, requester status sync links for fulfilled/cancelled/timed-out, final status notifications and pending cleanup, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -355,6 +355,116 @@
       createdAt: Number(readFvrParam('fvrCreatedAt') || 0),
       expiresAt: Number(readFvrParam('fvrExpiresAt') || 0)
     };
+  }
+
+  function getCurrentPageStatusSyncParams() {
+    return {
+      sync: readFvrParam('fvrSync'),
+      requestId: readFvrParam('fvrRequestId'),
+      status: readFvrParam('fvrStatus'),
+      userId: readFvrParam('fvrUserId'),
+      userDisplay: readFvrParam('fvrUser'),
+      userName: readFvrParam('fvrUserName'),
+      amountRaw: String(readFvrParam('fvrAmountRaw') || '').replace(/[^\d]/g, ''),
+      amountFormatted: readFvrParam('fvrAmountFormatted'),
+      banker: readFvrParam('fvrBanker'),
+      reason: readFvrParam('fvrReason'),
+      statusAt: Number(readFvrParam('fvrStatusAt') || Date.now())
+    };
+  }
+
+  function buildRequesterStatusSyncUrl(record, status, banker = {}, reason = '') {
+    const user = record.user || {};
+    const amount = record.amount || { raw: '0', formatted: '$0' };
+    const statusAt =
+      status === 'fulfilled' ? Number(record.completedAt || Date.now()) :
+      (status === 'cancelled' || status === 'canceled') ? Number(record.cancelledAt || Date.now()) :
+      Number(record.expiresAt || Date.now());
+
+    const params = new URLSearchParams({
+      fvrSync: 'requestStatus',
+      fvrStatus: status,
+      fvrRequestId: record.id || '',
+      fvrUser: user.display || `${user.name || 'User'} [${user.id || ''}]`,
+      fvrUserName: user.name || '',
+      fvrUserId: user.id || '',
+      fvrAmountRaw: amount.raw || '',
+      fvrAmountFormatted: amount.formatted || '',
+      fvrBanker: banker?.display || '',
+      fvrReason: reason || '',
+      fvrStatusAt: String(statusAt)
+    });
+
+    return `https://www.torn.com/factions.php?step=your&${params.toString()}`;
+  }
+
+  function statusLabel(status) {
+    if (status === 'fulfilled') return 'fulfilled';
+    if (status === 'cancelled' || status === 'canceled') return 'canceled';
+    if (status === 'expired' || status === 'timedout') return 'timed out';
+    return status || 'updated';
+  }
+
+  function parseStatusSyncRecord(params) {
+    const userDisplay = params.userDisplay || (params.userName && params.userId ? `${params.userName} [${params.userId}]` : (params.userId ? `User [${params.userId}]` : 'Unknown User'));
+    const parsedUser = parseTornUserDisplay(userDisplay);
+    if (!parsedUser.id && params.userId) parsedUser.id = params.userId;
+    if (!parsedUser.name && params.userName) parsedUser.name = params.userName;
+
+    return {
+      id: params.requestId || makeRequestId(params.userId, params.amountRaw),
+      user: parsedUser,
+      amount: {
+        raw: params.amountRaw || '0',
+        amount: Number(params.amountRaw || 0),
+        formatted: params.amountFormatted || formatMoney(params.amountRaw || 0)
+      }
+    };
+  }
+
+  function processRequesterStatusSyncFromUrl() {
+    const params = getCurrentPageStatusSyncParams();
+    if (params.sync !== 'requestStatus' || !params.requestId || !params.status) return false;
+
+    const record = parseStatusSyncRecord(params);
+    const status = params.status;
+    const label = statusLabel(status);
+    const actionKey = `requesterStatusSynced_${status}`;
+
+    if (hasRequestAction(record.id, actionKey)) {
+      removePendingRequest(record.id);
+      showToast(`This request was already synced as ${label}.`, 'ok');
+      return true;
+    }
+
+    markRequestAction(record.id, actionKey, {
+      requesterSyncedStatus: status,
+      requesterSyncedAt: Date.now()
+    });
+
+    let type = 'info';
+    let message = `${record.amount.formatted} vault request was ${label}. It was removed from pending requests.`;
+
+    if (status === 'fulfilled') {
+      type = 'fulfilled';
+      message = `${record.amount.formatted} vault request was fulfilled${params.banker ? ` by ${params.banker}` : ''}. It was removed from pending requests.`;
+    } else if (status === 'cancelled' || status === 'canceled') {
+      type = 'cancelled';
+      message = `${record.amount.formatted} vault request was canceled${params.reason ? `: ${params.reason}` : ' due to unavailable vault funds'}. It was removed from pending requests.`;
+    } else if (status === 'expired' || status === 'timedout') {
+      type = 'timedout';
+      message = `${record.amount.formatted} vault request timed out after 5 hours. It was removed from pending requests.`;
+    }
+
+    finalizePendingRequest(record.id, type, message);
+    showToast(message, type === 'cancelled' ? 'warn' : 'ok');
+
+    try {
+      const cleanUrl = `${location.origin}${location.pathname}${location.search.replace(/[?&]fvr[^&#=]*=[^&#]*/gi, '').replace(/[?&]$/, '')}${location.hash || ''}`;
+      history.replaceState(null, document.title, cleanUrl);
+    } catch {}
+
+    return true;
   }
 
   function parseBankerDisplay(value) {
@@ -989,7 +1099,19 @@
           timestamp: new Date().toISOString()
         }
       ],
-      components: []
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 5,
+              label: 'Update My Request Panel',
+              url: buildRequesterStatusSyncUrl(record, 'timedout')
+            }
+          ]
+        }
+      ]
     };
   }
 
@@ -1023,7 +1145,19 @@
           timestamp: new Date().toISOString()
         }
       ],
-      components: []
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 5,
+              label: 'Update My Request Panel',
+              url: buildRequesterStatusSyncUrl(record, 'fulfilled', banker)
+            }
+          ]
+        }
+      ]
     };
   }
 
@@ -3697,6 +3831,19 @@
           footer: { text: 'Please make a new request when funds are available.' },
           timestamp: new Date(cancelledAt).toISOString()
         }
+      ],
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 5,
+              label: 'Update My Request Panel',
+              url: buildRequesterStatusSyncUrl(record, 'cancelled', banker, reason)
+            }
+          ]
+        }
       ]
     };
   }
@@ -4543,11 +4690,15 @@
   function init() {
     addStyles();
     addLauncher();
+    processRequesterStatusSyncFromUrl();
     startPanelStateWatcher();
     startLauncherWatcher();
     startRequestTimeoutWatcher();
     setTimeout(openFulfilledPanelIfNeeded, 1500);
-    window.addEventListener('hashchange', () => setTimeout(openFulfilledPanelIfNeeded, 600));
+    window.addEventListener('hashchange', () => {
+      processRequesterStatusSyncFromUrl();
+      setTimeout(openFulfilledPanelIfNeeded, 600);
+    });
 
     // Keep the Name and Torn ID box blank by default.
     // Users can click the Prefill button beside the box when they want it filled.

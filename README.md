@@ -221,3 +221,16 @@ Final request statuses now update the local request panel:
 - **Timed out** sends the user timeout notice webhook when configured, adds a timed-out notification, and removes the request from pending.
 
 Because this is still a no-backend userscript, these local pending-list updates apply to the browser that has the request state. A banker fulfilling/canceling from a different browser can send the Discord/user notice, but automatically changing another user's already-open local panel would require a shared backend or bot.
+
+
+## Requester Panel Status Sync
+
+A no-backend userscript cannot silently update another user's browser when a banker fulfills or cancels from a different browser.
+
+To solve this without a backend, fulfilled, canceled, and timed-out user notice messages include an **Update My Request Panel** button. When the requester clicks it, Torn opens and the script:
+
+- adds the fulfilled/canceled/timed-out notification to their request panel
+- removes that request from their pending request list
+- saves the final status locally so the same notice is not applied twice
+
+For fully automatic cross-user panel updates without clicking the sync button, this project would need a small shared backend or Discord bot.
