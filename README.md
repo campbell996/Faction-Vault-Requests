@@ -31,33 +31,36 @@ Click the button above to install or update the userscript through Tampermonkey.
 - Panels can be resized from the bottom-right corner.
 - Panels keep the red **X** close button.
 - Vault Request panel with:
-  - Name and Torn ID field, example: `Evil_panda_420 [3236276]`
-  - Optional Discord user ID for channel ping in the banker request channel
+  - Blank **Name and Torn ID** field by default
+  - **Prefill** button beside the Name and Torn ID box
+  - **Discord name required**
   - Request amount field
   - Faction vault balance status
   - Check Vault Balance button
   - Request Status notifications
   - Pending Requests list
   - User how-to guide
-- Settings panel now has two webhook URLs:
+- The Discord name is shown in request, timeout, and fulfilled embeds as `@discordname`.
+- Discord usernames are not real Discord mentions unless you use a Discord user ID. This script asks for Discord name only.
+- **Check Vault Balance** works without a Torn API key when the member balance is visible on the current Torn faction/vault/controls page.
+- If an API key is saved, the script tries the API first.
+- If no API key is saved, the script scans the visible Torn page for the member row and balance.
+- If the balance cannot be confirmed from the API or the visible page, the request is blocked.
+- Settings panel has two webhook URLs:
   - **Faction Request Webhook** for banker request embeds
   - **User Notice Webhook** for timeout/fulfilled user notices
 - Timeout notices post to the User Notice Webhook when a request times out.
 - Fulfilled notices post to the User Notice Webhook when a banker clicks **Mark Request Fulfilled** after manually paying.
-- User notice messages are editable in Settings:
-  - Timeout notice title/message/footer/colour
-  - Fulfilled notice title/message/footer/colour
+- User notice messages are editable in Settings.
 - User notice templates support:
   - `{user}` / `{tornname}`
+  - `{discord}` / `{discordName}`
   - `{name}` / `{id}`
   - `{amount}` / `{balance}`
   - `{banker}` / `{bankerName}` / `{bankerId}`
   - `{timedOutAt}` / `{completedAt}`
 - Requests are blocked if the requested amount is higher than the member's confirmed faction vault balance.
-- Requests are also blocked if the member balance cannot be confirmed.
 - Requests expire after **5 hours**.
-- If the script/browser is running when the timeout happens, the Discord request message is edited to expired and the banker buttons are removed.
-- If the browser is closed, the script catches up the next time it runs.
 - Amount shortcuts:
   - `1000000` = `$1,000,000`
   - `1m` = `$1,000,000`
@@ -79,7 +82,7 @@ Click the button above to install or update the userscript through Tampermonkey.
 3. Open Torn.
 4. Click **Vault Request**.
 5. Click **Settings**.
-6. Paste a Torn API key that has faction access and can read vault/balance data.
+6. Paste a Torn API key if you want API-based balance checking and settings access.
 7. Paste your **Faction Request Webhook URL**. This is where banker request embeds are sent.
 8. Paste your **User Notice Webhook URL**. This is where timeout and fulfilled notices are sent.
 9. Pick or edit the banker request embedded message style.
@@ -91,24 +94,37 @@ Click the button above to install or update the userscript through Tampermonkey.
 ## How Users Make Requests
 
 1. Open Torn and click the **Vault Request** launcher button.
-2. Check the **Name and Torn ID** box is correct. It should look like `Evil_panda_420 [3236276]`.
-3. Optional: paste your Discord user ID if you want the banker request channel message to ping you. A normal webhook cannot send a private DM by itself.
-4. Enter the amount you want to request from your faction vault balance.
-5. You can type normal numbers or shortcuts:
+2. The **Name and Torn ID** box starts blank.
+3. Click **Prefill** beside the Name and Torn ID box to fill your Torn name and ID, or type it manually. It should look like `Evil_panda_420 [3236276]`.
+4. Enter your **Discord name**. This is required.
+5. Enter the amount you want to request from your faction vault balance.
+6. You can type normal numbers or shortcuts:
    - `1000000` sends as `$1,000,000`
    - `1m` sends as `$1,000,000`
    - `1b` sends as `$1,000,000,000`
    - `1t` sends as `$1,000,000,000,000`
-6. Click **Check Vault Balance** if you want to check your available balance first.
-7. Click **Make Request**.
-8. The script checks your vault balance again before sending.
-9. If your request is higher than your available vault balance, it will be blocked.
-10. If the request is allowed, it sends a Discord embed to the faction request webhook channel.
-11. Your panel will show a notification that the request was sent.
-12. The request expires after **5 hours**.
-13. If the request times out, the User Notice Webhook sends a timeout notice telling you to make another request.
-14. A leader/banker clicks the Discord button to open Torn faction controls, checks the details, then manually clicks **Give Money** and **Confirm**.
-15. After manually paying, the banker clicks **Mark Request Fulfilled** in the userscript panel. This sends a fulfilled notice to the User Notice Webhook with the banker name and completion timestamp.
+7. Click **Check Vault Balance**.
+8. If you do not have an API key saved, make sure the Torn faction/vault/controls page showing your balance is open/visible, then click **Check Vault Balance** again.
+9. Click **Make Request**.
+10. The script checks your vault balance again before sending.
+11. If your request is higher than your available vault balance, it will be blocked.
+12. If the request is allowed, it sends a Discord embed to the faction request webhook channel.
+13. The request expires after **5 hours**.
+14. If the request times out, the User Notice Webhook sends a timeout notice telling you to make another request.
+15. A leader/banker clicks the Discord button to open Torn faction controls, checks the details, then manually clicks **Give Money** and **Confirm**.
+16. After manually paying, the banker clicks **Mark Request Fulfilled** in the userscript panel. This sends a fulfilled notice to the User Notice Webhook with the banker name and completion timestamp.
+
+## No-API Balance Checking
+
+Without an API key, the script can only check a vault balance if that balance is already visible somewhere on the current Torn page. It looks for the matching Torn name/ID and a nearby money/balance value.
+
+If the balance is not visible, the script will not guess and will not send the request.
+
+## Discord Name Limitation
+
+The script requires a Discord name, not a Discord user ID.
+
+Discord webhooks cannot create a real user ping from a username alone, so the script displays the Discord name as text in the embeds, for example `@discordname`.
 
 ## No-Backend Limitation
 
