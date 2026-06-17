@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.5.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.7.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -1563,7 +1563,7 @@
   function chooseSafestVisibleBalanceCandidate(candidates) {
     const filtered = candidates
       .filter(c => Number.isFinite(c.amount) && c.amount >= 0)
-      .filter(c => c.score >= 95)
+      .filter(c => c.score >= 95 || (String(c.source || '').includes('faction-controls') && c.score >= 85))
       .sort((a, b) => b.score - a.score);
 
     if (!filtered.length) return null;
@@ -1579,15 +1579,240 @@
     return best;
   }
 
+  function isFactionControlsLikePage() {
+    const href = String(location.href || '').toLowerCase();
+    return href.includes('factions.php') && (
+      href.includes('tab=controls') ||
+      href.includes('step=your') ||
+      href.includes('controls') ||
+      href.includes('giveMoneyTo')
+    );
+  }
+
+  function elementHasExactProfileLink(el, user) {
+    const id = String(user?.id || '').trim();
+    if (!id || !el?.querySelectorAll) return false;
+
+    return !!Array.from(el.querySelectorAll('a[href*="profiles.php?XID="], a[href*="/profiles.php?XID="]'))
+      .some(a => String(a.getAttribute('href') || '').match(new RegExp(`XID=${id}(?:\\D|$)`, 'i')));
+  }
+
+  function getLikelyRowContainersFromElement(start) {
+    const containers = [];
+    let node = start;
+
+    for (let depth = 0; node && depth < 9; depth++, node = node.parentElement) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.closest?.(`.${APP}-panel`)) continue;
+      if (!isVisibleElement(node)) continue;
+
+      const text = cleanText(node.innerText || node.textContent || '');
+      if (!text || text.length > 1800) continue;
+
+      const tag = node.tagName.toLowerCase();
+      const cls = String(node.className || '').toLowerCase();
+      const role = String(node.getAttribute('role') || '').toLowerCase();
+
+      const looksRowish =
+        tag === 'tr' ||
+        tag === 'li' ||
+        role === 'row' ||
+        /row|member|user|player|balance|bank|vault|controls|table|list|item|give/i.test(`${cls} ${role}`);
+
+      const hasMoney = parseMoneyTokensFromText(text).length > 0;
+
+      if (looksRowish && hasMoney) containers.push(node);
+
+      if (text.length > 1200 && depth > 2) break;
+    }
+
+    return containers;
+  }
+
+  function findControlsUserStartElements(user) {
+    const id = String(user?.id || '').trim();
+    const name = cleanText(user?.name || user?.display || '')
+      .replace(/\s*\[\d+\]\s*$/, '')
+      .toLowerCase();
+
+    const starts = [];
+    const seen = new Set();
+
+    if (id) {
+      for (const a of Array.from(document.querySelectorAll(`a[href*="XID=${id}"]`))) {
+        if (a && !seen.has(a)) {
+          seen.add(a);
+          starts.push({ el: a, reason: 'exact-profile-link', profileMatch: true });
+        }
+      }
+    }
+
+    const selectors = [
+      'tr',
+      'li',
+      '[role="row"]',
+      '[class*="member" i]',
+      '[class*="user" i]',
+      '[class*="player" i]',
+      '[class*="balance" i]',
+      '[class*="bank" i]',
+      '[class*="vault" i]',
+      '[class*="controls" i]'
+    ];
+
+    for (const el of Array.from(document.querySelectorAll(selectors.join(',')))) {
+      if (!el || seen.has(el)) continue;
+      if (el.closest?.(`.${APP}-panel`)) continue;
+      if (!isVisibleElement(el)) continue;
+
+      const txt = cleanText(el.innerText || el.textContent || '');
+      if (!txt || txt.length > 1800) continue;
+
+      const lower = txt.toLowerCase();
+      const profileMatch = elementHasExactProfileLink(el, user);
+      const textMatch = (id && lower.includes(id)) || (name && name.length >= 2 && lower.includes(name));
+
+      if (profileMatch || textMatch) {
+        seen.add(el);
+        starts.push({ el, reason: profileMatch ? 'profile-link-container' : 'text-match-container', profileMatch });
+      }
+    }
+
+    return starts;
+  }
+
+  function scoreControlsMoneyCandidate(container, user, money, meta = {}) {
+    const rowText = cleanText(container.innerText || container.textContent || '');
+    const lower = rowText.toLowerCase();
+    const id = String(user?.id || '').trim();
+    const name = cleanText(user?.name || user?.display || '').replace(/\s*\[\d+\]\s*$/, '').toLowerCase();
+
+    const cls = String(container.className || '').toLowerCase();
+    const role = String(container.getAttribute('role') || '').toLowerCase();
+    const tag = container.tagName.toLowerCase();
+
+    const moneyTokens = parseMoneyTokensFromText(rowText);
+    const around = lower.slice(Math.max(0, money.index - 130), Math.min(lower.length, money.index + 130));
+    const wholeContext = `${rowText} ${cls} ${role}`.toLowerCase();
+
+    let score = 0;
+
+    if (isFactionControlsLikePage()) score += 35;
+    if (meta.profileMatch || elementHasExactProfileLink(container, user)) score += 115;
+    if (id && lower.includes(id)) score += 70;
+    if (name && name.length >= 2 && lower.includes(name)) score += 35;
+
+    if (tag === 'tr' || role === 'row') score += 35;
+    if (/member|user|player|balance|bank|vault|controls|table|row|item/.test(`${cls} ${role}`)) score += 20;
+
+    if (isGoodBalanceLabel(around)) score += 95;
+    if (isGoodBalanceLabel(wholeContext)) score += 35;
+
+    if (moneyTokens.length === 1 && isFactionControlsLikePage()) score += 80;
+    if (moneyTokens.length === 1 && (meta.profileMatch || elementHasExactProfileLink(container, user))) score += 45;
+
+    if (isBadBalanceLabel(around)) score -= 85;
+    if (/total faction|faction total|vault total|bank total|total vault|total balance/.test(wholeContext)) score -= 100;
+    if (/request|requested|give money|confirm|send|payment/.test(around)) score -= 70;
+    if (rowText.length > 1000) score -= 35;
+    if (rowText.length < 25) score -= 15;
+
+    return score;
+  }
+
+  function scanFactionControlsPageForUserBalance(user) {
+    if (!isFactionControlsLikePage()) return [];
+
+    const starts = findControlsUserStartElements(user);
+    const candidates = [];
+    const seenContainers = new Set();
+
+    for (const start of starts) {
+      const containers = getLikelyRowContainersFromElement(start.el);
+
+      if (parseMoneyTokensFromText(cleanText(start.el.innerText || start.el.textContent || '')).length) {
+        containers.unshift(start.el);
+      }
+
+      for (const container of containers) {
+        if (!container || seenContainers.has(container)) continue;
+        seenContainers.add(container);
+
+        const rowText = cleanText(container.innerText || container.textContent || '');
+        if (!rowText || rowText.length > 1800) continue;
+        if (!rowContainsUser(rowText, user) && !elementHasExactProfileLink(container, user)) continue;
+
+        if (container.tagName.toLowerCase() === 'tr') {
+          const cells = Array.from(container.children).filter(c => isVisibleElement(c));
+          const headers = getTableHeadersForRow(container);
+
+          for (let i = 0; i < cells.length; i++) {
+            const cell = cells[i];
+            const cellText = cleanText(cell.innerText || cell.textContent || '');
+            const tokens = parseMoneyTokensFromText(cellText);
+            if (!tokens.length) continue;
+
+            const headerText = cleanText(headers[i] || cell.getAttribute('data-title') || cell.getAttribute('aria-label') || '');
+            const prevText = cleanText(cells[i - 1]?.innerText || cells[i - 1]?.textContent || '');
+            const nextText = cleanText(cells[i + 1]?.innerText || cells[i + 1]?.textContent || '');
+            const labelContext = `${headerText} ${prevText} ${nextText} ${cell.getAttribute('class') || ''}`;
+
+            for (const token of tokens) {
+              let score = scoreControlsMoneyCandidate(container, user, token, start);
+              if (isGoodBalanceLabel(labelContext)) score += 140;
+              if (isBadBalanceLabel(labelContext)) score -= 100;
+
+              candidates.push({
+                amount: token.amount,
+                formatted: formatMoney(token.amount),
+                raw: token.raw,
+                score,
+                source: 'faction-controls-row-balance',
+                label: headerText || 'controls row',
+                text: rowText
+              });
+            }
+          }
+
+          continue;
+        }
+
+        const tokens = parseMoneyTokensFromText(rowText);
+
+        for (const token of tokens) {
+          const score = scoreControlsMoneyCandidate(container, user, token, start);
+
+          candidates.push({
+            amount: token.amount,
+            formatted: formatMoney(token.amount),
+            raw: token.raw,
+            score,
+            source: 'faction-controls-member-balance',
+            label: start.reason,
+            text: rowText
+          });
+        }
+      }
+    }
+
+    return candidates;
+  }
+
   function findVisibleVaultBalanceForUser(user) {
     const id = String(user?.id || '').trim();
     const name = cleanText(user?.name || user?.display || '').replace(/\s*\[\d+\]\s*$/, '').toLowerCase();
 
     if (!id && !name) return null;
 
-    const candidates = [
+    const controlsCandidates = scanFactionControlsPageForUserBalance(user);
+    const otherCandidates = [
       ...scanTableRowsForVisibleBalance(user),
       ...scanLabelledBlocksForVisibleBalance(user)
+    ];
+
+    const candidates = [
+      ...controlsCandidates,
+      ...otherCandidates
     ];
 
     const best = chooseSafestVisibleBalanceCandidate(candidates);
@@ -1653,7 +1878,7 @@
     }
 
     if (!key) {
-      throw new Error('Could not safely confirm vault balance without an API key. Open the Torn faction vault/balance page where this member has a labelled Balance/Vault/Funds/Available amount visible, then click Check Vault Balance again.');
+      throw new Error('Could not safely confirm vault balance without an API key. Open Torn faction controls/vault where this member\'s row shows their money balance, then click Check Vault Balance again.');
     }
 
     throw new Error(errors[0] || 'Could not confirm this member vault balance from the API or the visible Torn page.');
@@ -1720,7 +1945,7 @@
     balanceCheckLocked = true;
     updateBalanceStatus(settings.apiKey
       ? 'Vault balance: checking with API...'
-      : 'Vault balance: checking visible Torn page for a labelled member balance...', 'warn');
+      : 'Vault balance: checking Torn faction controls page for this member...', 'warn');
 
     try {
       const balance = await getMemberVaultBalance(user.id, { user });
@@ -2208,8 +2433,29 @@
     panel.style.bottom = 'auto';
   }
 
+  function ensurePanelBodyScroller(panel) {
+    if (!panel || panel.dataset.tvresBodyWrapped === '1') return;
+
+    const header = panel.querySelector(`.${APP}-header`);
+    if (!header) return;
+
+    const body = document.createElement('div');
+    body.className = `${APP}-body`;
+
+    const children = Array.from(panel.childNodes);
+    for (const child of children) {
+      if (child === header) continue;
+      body.appendChild(child);
+    }
+
+    panel.appendChild(body);
+    panel.dataset.tvresBodyWrapped = '1';
+  }
+
   function makePanelMoveResize(panel) {
     if (!panel || panel.dataset.tvresInteractive === '1') return;
+
+    ensurePanelBodyScroller(panel);
 
     panel.dataset.tvresInteractive = '1';
 
@@ -2440,9 +2686,7 @@
         z-index: 1000000;
         width: min(470px, calc(100vw - 30px));
         max-height: min(760px, calc(100vh - 92px));
-        overflow: auto;
-        scrollbar-width: thin;
-        scrollbar-color: var(--${APP}-line) #120c07;
+        overflow: hidden;
         border: 1px solid var(--${APP}-line);
         border-radius: 18px;
         background:
@@ -2456,36 +2700,47 @@
         resize: both;
         min-width: 320px;
         min-height: 260px;
+        display: flex;
+        flex-direction: column;
       }
 
-      .${APP}-panel::-webkit-scrollbar {
+      .${APP}-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+        padding-bottom: 18px;
+        scrollbar-width: thin;
+        scrollbar-color: var(--${APP}-line) #120c07;
+      }
+
+      .${APP}-body::-webkit-scrollbar {
         width: 10px;
         height: 10px;
       }
 
-      .${APP}-panel::-webkit-scrollbar-track {
+      .${APP}-body::-webkit-scrollbar-track {
         background: #120c07;
         border-radius: 999px;
       }
 
-      .${APP}-panel::-webkit-scrollbar-thumb {
+      .${APP}-body::-webkit-scrollbar-thumb {
         background: #7a4d1d;
         border: 2px solid #120c07;
         border-radius: 999px;
       }
 
       .${APP}-resizeGrip {
-        position: sticky;
-        float: right;
-        right: 2px;
-        bottom: 2px;
+        position: absolute;
+        right: 8px;
+        bottom: 8px;
         width: 18px;
         height: 18px;
-        margin: 8px 0 0 auto;
         border-right: 3px solid rgba(255,179,71,.85);
         border-bottom: 3px solid rgba(255,179,71,.85);
         cursor: nwse-resize;
-        opacity: .8;
+        opacity: .85;
+        z-index: 3;
+        pointer-events: auto;
       }
 
       .${APP}-panel.${APP}-dragging {
@@ -2496,12 +2751,14 @@
       .${APP}-panel * { box-sizing: border-box; }
 
       .${APP}-header {
+        flex: 0 0 auto;
         border: 1px solid rgba(255,179,71,.55);
         border-radius: 15px;
-        background: rgba(0,0,0,.22);
+        background: rgba(0,0,0,.32);
         padding: 12px;
         margin-bottom: 12px;
         cursor: move;
+        z-index: 2;
       }
 
       .${APP}-headRow {

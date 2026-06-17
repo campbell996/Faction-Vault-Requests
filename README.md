@@ -23,6 +23,7 @@ Click the button above to install or update the userscript through Tampermonkey.
 ## Features
 
 - Clean RWPH-style dark panels.
+- Panel headers now stay fixed at the top while only the body content scrolls.
 - All script panels use RWPH-style controls:
   - drag the top bar to move
   - resize from the bottom-right grip
@@ -54,9 +55,9 @@ Click the button above to install or update the userscript through Tampermonkey.
 - Saved request info is stored per Torn ID in this browser.
 - The Discord name is shown in request, timeout, and fulfilled embeds as `@discordname`.
 - Discord usernames are not real Discord mentions unless you use a Discord user ID. This script asks for Discord name only.
-- **Check Vault Balance** works without a Torn API key only when a clearly labelled member balance is visible on the current Torn faction/vault/controls page.
+- **Check Vault Balance** works without a Torn API key on the Torn faction controls/vault page when the filled-in Torn name/ID appears in a member row/card with that member's money balance.
 - If an API key is saved, the script tries the API first.
-- If no API key is saved, the script scans the visible Torn page for the member row and a nearby/column-labelled **Balance**, **Vault**, **Funds**, or **Available** amount.
+- If no API key is saved, the script first scans the Torn faction controls page for that exact profile/ID and reads the balance from the same member row/card. It also supports labelled **Balance**, **Vault**, **Funds**, or **Available** columns/blocks.
 - If the balance cannot be confirmed from the API or the visible page, the request is blocked.
 - Settings panel has two webhook URLs:
   - **Faction Request Webhook** for banker request embeds
@@ -138,7 +139,7 @@ All main panels support the RWPH-style controls:
 
 - Drag the top bar to move the panel.
 - Drag the bottom-right grip to resize the panel.
-- Scroll inside the panel when content is long.
+- Scroll inside the panel body when content is long. The header/logo/close bar stays at the top.
 - Click the red **X** to close.
 - Size and position are remembered locally.
 
@@ -146,7 +147,7 @@ All main panels support the RWPH-style controls:
 
 Without an API key, the script can only check a vault balance if that balance is already visible somewhere on the current Torn page.
 
-The fallback now uses a stricter safety check. It looks for the matching Torn name/ID and a clearly labelled **Balance**, **Vault**, **Funds**, or **Available** money value in the same member row/block.
+The fallback now has a dedicated Torn faction controls scanner. It looks for the matching Torn name/ID or profile link first, then reads the money value from that same member row/card. It also supports clearly labelled **Balance**, **Vault**, **Funds**, or **Available** values.
 
 If it sees multiple possible money values or cannot clearly identify the balance, it refuses to use the visible-page fallback. It will not guess and will not send the request.
 
