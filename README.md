@@ -60,6 +60,8 @@ Click the button above to install or update the userscript through Tampermonkey.
 - The requester panel no longer has a **Check Vault Balance** button.
 - Requests are not blocked by balance; bankers approve or deny manually.
 - When a banker clicks **Open Faction Controls** in Discord, the banker panel opens and checks the requester’s current faction vault balance using a Torn API key.
+- Banker panel has a **Save Banker API Key** button so the banker can save the key in their browser.
+- Banker completion panel has **Cancel - Unavailable Funds** to cancel a request and send the unavailable-funds notice.
 - The API key is only required to access the Settings panel.
 - Requesters do **not** check balance and do **not** need an API key to send requests.
 - When the banker opens faction controls from the Discord button, the banker panel can use a Torn API key with faction access to show the requester’s current faction vault balance. It also supports labelled **Balance**, **Vault**, **Funds**, or **Available** columns/blocks.
@@ -153,6 +155,10 @@ All main panels support the RWPH-style controls:
 The requester panel does not check or block vault balances.
 
 When a banker clicks **Open Faction Controls** in the Discord request embed, the script opens the completion panel on Torn. That panel shows the requested user and amount, then checks the requester’s current faction vault balance using a Torn API key with faction access.
+
+The banker can click **Save Banker API Key** to save the faction-access key in their browser, then click **Check Current Balance** any time.
+
+The completion panel also has **Cancel - Unavailable Funds**. This cancels the request in the script, tries to edit the original Discord request to **Canceled**, and sends the user notice webhook saying the request was canceled due to unavailable vault funds.
 
 The banker can then approve or deny manually. The script does not auto-pay, auto-confirm, or auto-deny.
 

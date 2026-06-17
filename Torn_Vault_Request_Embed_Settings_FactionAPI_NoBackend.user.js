@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.10.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.12.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -344,6 +344,7 @@
   function getCurrentPageRequestParams() {
     return {
       requestId: readFvrParam('fvrRequestId'),
+      discordMessageId: readFvrParam('fvrDiscordMessageId'),
       userId: readFvrParam('fvrUserId') || readFvrParam('giveMoneyTo'),
       userDisplay: readFvrParam('fvrUser'),
       userName: readFvrParam('fvrUserName'),
@@ -815,6 +816,7 @@
 
     const fvrParams = new URLSearchParams({
       fvrRequestId: request.id || '',
+      fvrDiscordMessageId: request.discordMessageId || '',
       fvrUser: user.display || `${user.name} [${user.id}]`,
       fvrUserName: user.name || '',
       fvrUserId: user.id || '',
@@ -3332,10 +3334,20 @@
         discordMessageId = body.id || '';
       } catch {}
 
-      storePendingRequest({
+      const storedRecord = {
         ...requestRecordBase,
         discordMessageId
-      });
+      };
+
+      if (discordMessageId) {
+        try {
+          await editWebhookMessage(discordMessageId, buildPayload(user, amount, balance, storedRecord));
+        } catch (err) {
+          console.warn('[Vault Request] Could not update Discord request button with message id:', err);
+        }
+      }
+
+      storePendingRequest(storedRecord);
 
       addRequestNotification(
         'sent',
@@ -3373,7 +3385,12 @@
 
     if (params.requestId) {
       const byId = settings.pendingRequests.find(req => req.id === params.requestId);
-      if (byId) return byId;
+      if (byId) {
+        if (params.discordMessageId && !byId.discordMessageId) {
+          byId.discordMessageId = params.discordMessageId;
+        }
+        return byId;
+      }
     }
 
     if (params.userId && params.amountRaw) {
@@ -3382,7 +3399,12 @@
         String(req.user?.id || '') === String(params.userId) &&
         String(req.amount?.raw || '') === String(params.amountRaw)
       );
-      if (local) return local;
+      if (local) {
+        if (params.discordMessageId && !local.discordMessageId) {
+          local.discordMessageId = params.discordMessageId;
+        }
+        return local;
+      }
     }
 
     const userDisplay = params.userDisplay || (params.userName && params.userId ? `${params.userName} [${params.userId}]` : (params.userId ? `User [${params.userId}]` : 'Unknown User'));
@@ -3403,7 +3425,7 @@
       createdAt: params.createdAt || Date.now(),
       expiresAt: params.expiresAt || (Date.now() + REQUEST_TIMEOUT_MS),
       status: 'pending',
-      discordMessageId: ''
+      discordMessageId: params.discordMessageId || ''
     };
   }
 
@@ -3419,6 +3441,33 @@
     const inputValue = cleanText($('bankerBalanceApiKey')?.value || '');
     if (inputValue && inputValue !== '********') return inputValue;
     return cleanText(settings.apiKey || '');
+  }
+
+  function saveBankerApiKeyFromPanel(showToastOnSuccess = true) {
+    const input = $('bankerBalanceApiKey');
+    const key = cleanText(input?.value || '');
+
+    if (!key || key === '********') {
+      if (settings.apiKey) {
+        if (showToastOnSuccess) showToast('Banker API key is already saved.', 'ok');
+        return true;
+      }
+
+      if (showToastOnSuccess) showToast('Paste a Torn API key before saving.', 'warn');
+      return false;
+    }
+
+    if (key.length < 8) {
+      if (showToastOnSuccess) showToast('That API key looks too short.', 'warn');
+      return false;
+    }
+
+    settings.apiKey = key;
+    saveSettings();
+
+    if (input) input.value = '********';
+    if (showToastOnSuccess) showToast('Banker API key saved in this browser.', 'ok');
+    return true;
   }
 
   async function fetchRequesterBalanceByApi(apiKey, userId) {
@@ -3468,14 +3517,7 @@
     try {
       const balance = await fetchRequesterBalanceByApi(apiKey, userId);
 
-      if ($('bankerBalanceApiKey')) {
-        const entered = cleanText($('bankerBalanceApiKey').value || '');
-        if (entered && entered !== '********') {
-          settings.apiKey = entered;
-          saveSettings();
-          $('bankerBalanceApiKey').value = '********';
-        }
-      }
+      saveBankerApiKeyFromPanel(false);
 
       setBankerBalanceStatus(`Requester current faction vault balance: ${balance.formatted}`, 'ok');
 
@@ -3496,6 +3538,129 @@
         btn.textContent = 'Check Current Balance';
       }
     }
+  }
+
+  function buildMainCancelledPayload(record, banker, reason = 'Unavailable vault funds') {
+    const user = record.user || { display: 'Unknown', name: 'Unknown', id: '' };
+    const amount = record.amount || { formatted: '$0', raw: '0' };
+    const balance = record.balance || { formatted: 'Not checked' };
+    const cancelledAt = Number(record.cancelledAt || Date.now());
+    const discordName = normalizeDiscordName(record.discordName || '');
+
+    return {
+      username: 'Torn Vault Request',
+      avatar_url: 'https://www.torn.com/favicon.ico',
+      content: '',
+      allowed_mentions: { parse: [] },
+      embeds: [
+        {
+          title: 'Vault Request Canceled',
+          description: `**${escapeDiscord(user.display || `${user.name} [${user.id}]`)}** requested **${amount.formatted}**, but the request was canceled by a banker.`,
+          color: 0xed4245,
+          fields: [
+            { name: 'User', value: escapeDiscord(user.display || `${user.name} [${user.id}]`), inline: true },
+            ...(discordName ? [{ name: 'Discord Name', value: escapeDiscordKeepAt(formatDiscordName(discordName)), inline: true }] : []),
+            { name: 'Amount Requested', value: amount.formatted, inline: true },
+            { name: 'Current Vault Balance', value: balance.formatted || 'Not checked', inline: true },
+            { name: 'Status', value: 'Canceled', inline: true },
+            { name: 'Reason', value: escapeDiscord(reason), inline: false },
+            { name: 'Canceled By', value: escapeDiscord(formatTornMention(banker)), inline: true },
+            { name: 'Canceled At', value: `<t:${Math.floor(cancelledAt / 1000)}:F>`, inline: false }
+          ],
+          footer: { text: 'Canceled because available vault funds were not enough.' },
+          timestamp: new Date(cancelledAt).toISOString()
+        }
+      ],
+      components: []
+    };
+  }
+
+  function buildUserCancelledPayload(record, banker, reason = 'Unavailable vault funds') {
+    const user = record.user || { display: 'Unknown', name: 'Unknown', id: '' };
+    const amount = record.amount || { formatted: '$0', raw: '0' };
+    const balance = record.balance || { formatted: 'Not checked' };
+    const cancelledAt = Number(record.cancelledAt || Date.now());
+    const discordName = normalizeDiscordName(record.discordName || '');
+
+    return {
+      username: 'Torn Vault Request',
+      avatar_url: 'https://www.torn.com/favicon.ico',
+      content: '',
+      allowed_mentions: { parse: [] },
+      embeds: [
+        {
+          title: 'Vault Request Canceled',
+          description: `${escapeDiscord(formatTornMention(user))} your vault request for **${amount.formatted}** was canceled due to unavailable vault funds.`,
+          color: 0xed4245,
+          fields: [
+            { name: 'Requester', value: escapeDiscord(formatTornMention(user)), inline: true },
+            ...(discordName ? [{ name: 'Discord Name', value: escapeDiscordKeepAt(formatDiscordName(discordName)), inline: true }] : []),
+            { name: 'Amount Requested', value: amount.formatted, inline: true },
+            { name: 'Current Vault Balance', value: balance.formatted || 'Not checked', inline: true },
+            { name: 'Reason', value: escapeDiscord(reason), inline: false },
+            { name: 'Canceled By', value: escapeDiscord(formatTornMention(banker)), inline: true },
+            { name: 'Canceled At', value: `<t:${Math.floor(cancelledAt / 1000)}:F>`, inline: false }
+          ],
+          footer: { text: 'Please make a new request when funds are available.' },
+          timestamp: new Date(cancelledAt).toISOString()
+        }
+      ]
+    };
+  }
+
+  async function cancelCurrentRequestUnavailableFunds(record, banker) {
+    const cancelledRecord = {
+      ...record,
+      cancelledAt: Date.now(),
+      status: 'cancelled',
+      cancelReason: 'Unavailable vault funds'
+    };
+
+    if (!webhookLooksValid(settings.userNotifyWebhookUrl)) {
+      throw new Error('Add the User Notice Webhook URL in Settings before canceling requests.');
+    }
+
+    let mainUpdated = false;
+    let mainError = '';
+
+    if (cancelledRecord.discordMessageId && webhookLooksValid(settings.webhookUrl)) {
+      try {
+        await editWebhookMessage(cancelledRecord.discordMessageId, buildMainCancelledPayload(cancelledRecord, banker));
+        mainUpdated = true;
+      } catch (err) {
+        console.warn('[Vault Request] Could not edit main request message after cancellation:', err);
+        mainError = err.message || String(err);
+      }
+    }
+
+    if (!mainUpdated && webhookLooksValid(settings.webhookUrl)) {
+      try {
+        await postWebhook(buildMainCancelledPayload(cancelledRecord, banker), { wait: false });
+        mainUpdated = true;
+      } catch (err) {
+        console.warn('[Vault Request] Could not post main cancellation notice:', err);
+        mainError = mainError || err.message || String(err);
+      }
+    }
+
+    await postWebhook(buildUserCancelledPayload(cancelledRecord, banker), { kind: 'notify', wait: false });
+
+    updatePendingRequest(cancelledRecord.id, {
+      status: 'cancelled',
+      cancelledAt: cancelledRecord.cancelledAt,
+      cancelReason: cancelledRecord.cancelReason,
+      banker,
+      mainCancellationUpdated: mainUpdated,
+      mainCancellationError: mainError
+    });
+
+    addRequestNotification(
+      'error',
+      `${cancelledRecord.amount?.formatted || ''} vault request was canceled due to unavailable vault funds by ${formatTornMention(banker)}.`,
+      cancelledRecord.id
+    );
+
+    return cancelledRecord;
   }
 
   async function markCurrentRequestFulfilled(record, banker) {
@@ -3571,6 +3736,7 @@
         </p>
 
         <div class="${APP}-row">
+          <button type="button" class="${APP}-btn good" id="${APP}-saveBankerApiKey">Save Banker API Key</button>
           <button type="button" class="${APP}-btn" id="${APP}-checkBankerBalance">Check Current Balance</button>
         </div>
       </div>
@@ -3583,11 +3749,13 @@
 
         <p class="${APP}-note">
           First manually complete the payment in Torn. Then click <b>Mark Request Fulfilled</b>.
-          This sends the user notice webhook message with the banker name and completion timestamp.
+          If the requester does not have enough faction vault funds, click <b>Cancel - Unavailable Funds</b> instead.
+          Both buttons send a user notice webhook message.
         </p>
 
         <div class="${APP}-row">
           <button type="button" class="${APP}-btn good" id="${APP}-markFulfilled">Mark Request Fulfilled</button>
+          <button type="button" class="${APP}-btn danger" id="${APP}-cancelUnavailableFunds">Cancel - Unavailable Funds</button>
           <button type="button" class="${APP}-btn" id="${APP}-refreshBanker">Refill Banker Name</button>
         </div>
       </div>
@@ -3602,9 +3770,38 @@
       $('bankerName').value = getCurrentBankerDisplay();
     });
 
+    $('saveBankerApiKey').addEventListener('click', () => saveBankerApiKeyFromPanel(true));
     $('checkBankerBalance').addEventListener('click', () => checkBankerRequesterBalance(record, params, true));
 
     setTimeout(() => checkBankerRequesterBalance(record, params, false), 350);
+
+    $('cancelUnavailableFunds').addEventListener('click', async () => {
+      const banker = parseBankerDisplay($('bankerName')?.value || getCurrentBankerDisplay());
+
+      if (!banker.display || !banker.name) {
+        showToast('Enter banker name and Torn ID first.', 'warn');
+        return;
+      }
+
+      const btn = $('cancelUnavailableFunds');
+      btn.disabled = true;
+      btn.textContent = 'Canceling...';
+
+      try {
+        await cancelCurrentRequestUnavailableFunds(record, banker);
+        showToast('Request canceled and unavailable-funds notice sent.', 'ok');
+        closePanel('fulfillPanel');
+      } catch (err) {
+        console.error('[Vault Request] Cancel request failed:', err);
+        showToast(err.message || 'Could not cancel request.', 'bad');
+      } finally {
+        const liveBtn = $('cancelUnavailableFunds');
+        if (liveBtn) {
+          liveBtn.disabled = false;
+          liveBtn.textContent = 'Cancel - Unavailable Funds';
+        }
+      }
+    });
 
     $('markFulfilled').addEventListener('click', async () => {
       const banker = parseBankerDisplay($('bankerName')?.value || getCurrentBankerDisplay());
