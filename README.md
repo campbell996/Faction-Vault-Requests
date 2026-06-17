@@ -244,3 +244,18 @@ Some Discord webhook/client setups may not show link buttons. Status notice embe
 - a normal visible embed link named **Update My Request Panel**
 
 If the button is missing, the requester can click the visible embed link instead. It performs the same update: removes the request from pending and adds the final fulfilled/canceled/timed-out notification locally.
+
+
+## Main Panel Update / Refresh Button
+
+The main request panel now has **Update / Refresh Request Panel** in the Request Status card.
+
+This button:
+
+- applies any Discord status-sync link that opened Torn
+- removes fulfilled/canceled/timed-out requests from pending when the sync data is present
+- checks local pending requests for 5-hour timeouts
+- reloads saved pending requests/notifications from the browser
+- redraws both the notifications list and pending request list
+
+This is still no-backend: the button cannot pull hidden status changes from Discord by itself. It can apply the status data from the Discord sync link and refresh local browser data.

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.18.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, visible requester status sync embed links plus buttons for fulfilled/cancelled/timed-out, final status notifications and pending cleanup, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.19.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, main panel update/refresh button, visible requester status sync embed links plus buttons for fulfilled/cancelled/timed-out, final status notifications and pending cleanup, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -149,6 +149,21 @@
 
   function saveSettings() {
     localStorage.setItem(STORE_KEY, JSON.stringify(settings));
+  }
+
+  function reloadSettingsFromStorage() {
+    const currentUserDisplay = $('user')?.value;
+    const currentDiscordName = $('discordName')?.value;
+    const currentAmountInput = $('amount')?.value;
+
+    settings = loadSettings();
+
+    if (currentUserDisplay !== undefined) settings.userDisplay = cleanText(currentUserDisplay);
+    if (currentDiscordName !== undefined) settings.discordName = normalizeDiscordName(currentDiscordName);
+    if (currentAmountInput !== undefined) settings.amountInput = currentAmountInput;
+
+    ensureRequestStores();
+    return settings;
   }
 
   function ensureUserProfiles() {
@@ -465,6 +480,44 @@
     } catch {}
 
     return true;
+  }
+
+  async function refreshUserRequestPanel(showToastOnSuccess = true) {
+    const btn = $('refreshRequestStatus');
+
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Refreshing...';
+    }
+
+    try {
+      reloadSettingsFromStorage();
+
+      const synced = processRequesterStatusSyncFromUrl();
+      await checkPendingRequestTimeouts();
+      updateRequestNotificationsPanel();
+
+      if (showToastOnSuccess) {
+        showToast(
+          synced
+            ? 'Request status synced. Pending requests and notifications refreshed.'
+            : 'Pending requests and notifications refreshed.',
+          'ok'
+        );
+      }
+
+      return true;
+    } catch (err) {
+      console.error('[Vault Request] Refresh request panel failed:', err);
+      if (showToastOnSuccess) showToast(err.message || 'Could not refresh request status.', 'bad');
+      return false;
+    } finally {
+      const liveBtn = $('refreshRequestStatus');
+      if (liveBtn) {
+        liveBtn.disabled = false;
+        liveBtn.textContent = 'Update / Refresh Request Panel';
+      }
+    }
   }
 
   function parseBankerDisplay(value) {
@@ -4192,8 +4245,12 @@
         <div class="${APP}-cardTitle">Request Status</div>
         <div id="${APP}-requestNotifications"></div>
         <div class="${APP}-row">
+          <button type="button" class="${APP}-btn good" id="${APP}-refreshRequestStatus">Update / Refresh Request Panel</button>
           <button type="button" class="${APP}-btn" id="${APP}-markNoticesRead">Mark Notifications Read</button>
         </div>
+        <p class="${APP}-note">
+          Use <b>Update / Refresh Request Panel</b> after clicking a Discord status link, or any time you want to refresh pending requests and notifications.
+        </p>
         <div class="${APP}-cardTitle" style="margin-top:12px;">Pending Requests</div>
         <div id="${APP}-pendingRequests"></div>
       </div>
@@ -4213,7 +4270,7 @@
           4. When the banker opens faction controls from Discord, their banker panel checks your current faction vault balance so they can approve or deny manually.
         </p>
         <p class="${APP}-note">
-          5. The request stays pending for <b>5 hours</b>. If it times out, this panel will show a notification and you need to make another request.
+          5. The request stays pending for <b>5 hours</b>. Click <b>Update / Refresh Request Panel</b> to refresh pending requests, notifications, and any Discord status-sync link.
         </p>
         <p class="${APP}-note">
           6. A banker/leader reviews the Discord embed and manually pays it from Torn faction controls.
@@ -4268,6 +4325,7 @@
 
     $('make').addEventListener('click', makeRequest);
     $('settingsBtn').addEventListener('click', tryOpenSettings);
+    $('refreshRequestStatus').addEventListener('click', () => refreshUserRequestPanel(true));
     $('markNoticesRead').addEventListener('click', markRequestNotificationsRead);
 
     $('refreshUser').addEventListener('click', () => prefillUserNameId(true));
