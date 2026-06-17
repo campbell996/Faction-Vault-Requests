@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.12.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.14.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -1950,7 +1950,47 @@
   function ensureRequestStores() {
     if (!Array.isArray(settings.pendingRequests)) settings.pendingRequests = [];
     if (!Array.isArray(settings.requestNotifications)) settings.requestNotifications = [];
+    if (!settings.requestActionLog || typeof settings.requestActionLog !== 'object') settings.requestActionLog = {};
     return settings;
+  }
+
+  function getRequestActionLog(requestId) {
+    ensureRequestStores();
+    const id = String(requestId || '');
+    if (!id) return {};
+    if (!settings.requestActionLog[id] || typeof settings.requestActionLog[id] !== 'object') {
+      settings.requestActionLog[id] = {};
+    }
+    return settings.requestActionLog[id];
+  }
+
+  function hasRequestAction(requestId, action) {
+    const log = getRequestActionLog(requestId);
+    return !!log[action];
+  }
+
+  function markRequestAction(requestId, action, extra = {}) {
+    const log = getRequestActionLog(requestId);
+    log[action] = true;
+    log[`${action}At`] = Date.now();
+    Object.assign(log, extra);
+    saveSettings();
+  }
+
+  function addOrUpdatePendingRequest(record) {
+    if (!record?.id) return;
+    ensureRequestStores();
+
+    const index = settings.pendingRequests.findIndex(req => req.id === record.id);
+    if (index >= 0) {
+      settings.pendingRequests[index] = { ...settings.pendingRequests[index], ...record };
+    } else {
+      settings.pendingRequests.unshift(record);
+      settings.pendingRequests = settings.pendingRequests.slice(0, MAX_PENDING_REQUESTS);
+    }
+
+    saveSettings();
+    updateRequestNotificationsPanel();
   }
 
   function addRequestNotification(type, message, requestId = '') {
@@ -1989,9 +2029,22 @@
   function updatePendingRequest(requestId, patch) {
     ensureRequestStores();
 
-    settings.pendingRequests = settings.pendingRequests.map(req =>
-      req.id === requestId ? { ...req, ...patch } : req
-    );
+    let found = false;
+    settings.pendingRequests = settings.pendingRequests.map(req => {
+      if (req.id === requestId) {
+        found = true;
+        return { ...req, ...patch };
+      }
+      return req;
+    });
+
+    if (!found && requestId) {
+      settings.pendingRequests.unshift({
+        id: requestId,
+        ...patch
+      });
+      settings.pendingRequests = settings.pendingRequests.slice(0, MAX_PENDING_REQUESTS);
+    }
 
     saveSettings();
     updateRequestNotificationsPanel();
@@ -2065,6 +2118,8 @@
   async function expireRequest(record) {
     if (!record || record.status !== 'pending') return;
 
+    if (hasRequestAction(record.id, 'expired')) return;
+
     let editOk = false;
     let errorMessage = '';
 
@@ -2073,32 +2128,25 @@
         await editWebhookMessage(record.discordMessageId, buildExpiredPayload(record));
         editOk = true;
       } catch (err) {
-        console.error('[Vault Request] Failed to edit expired Discord request:', err);
-        errorMessage = err.message || String(err);
-      }
-    }
-
-    if (!editOk) {
-      try {
-        await postWebhook(buildExpiredPayload(record), { wait: false });
-        editOk = true;
-      } catch (err) {
-        console.error('[Vault Request] Failed to post expired Discord notification:', err);
+        console.warn('[Vault Request] Original Discord request could not be edited after timeout. It may have been deleted by an admin; not reposting:', err);
         errorMessage = err.message || String(err);
       }
     }
 
     let userNoticeOk = false;
 
-    if (webhookLooksValid(settings.userNotifyWebhookUrl)) {
+    if (webhookLooksValid(settings.userNotifyWebhookUrl) && !hasRequestAction(record.id, 'timeoutUserNoticeSent')) {
       try {
         await postWebhook(buildUserTimeoutPayload(record), { kind: 'notify', wait: false });
         userNoticeOk = true;
+        markRequestAction(record.id, 'timeoutUserNoticeSent');
       } catch (err) {
         console.error('[Vault Request] Failed to send user timeout webhook:', err);
         errorMessage = errorMessage || err.message || String(err);
       }
     }
+
+    markRequestAction(record.id, 'expired', { expiredMainEdited: editOk });
 
     updatePendingRequest(record.id, {
       status: 'expired',
@@ -3430,11 +3478,37 @@
   }
 
   function getCurrentBankerDisplay() {
-    const found = findSelfFromWindow() || findSelfFromScripts() || findSelfFromDom();
-    if (found?.name && found?.id) {
-      return `${found.name} [${found.id}]`;
+    const found = detectCurrentTornUser();
+    if (found?.id) {
+      return displayFromUser(found);
     }
     return '';
+  }
+
+  function prefillBankerNameId(showResultToast = true) {
+    const detected = detectCurrentTornUser();
+
+    if (detected?.id) {
+      const display = displayFromUser(detected);
+      if ($('bankerName')) $('bankerName').value = display;
+
+      if (showResultToast) {
+        showToast(
+          detected.hasRealName
+            ? 'Banker name and Torn ID prefilled.'
+            : 'Banker Torn ID was detected, but Torn name was not visible. Type the banker name before the ID once.',
+          detected.hasRealName ? 'ok' : 'warn'
+        );
+      }
+
+      return true;
+    }
+
+    if (showResultToast) {
+      showToast('Could not detect banker Torn name and ID. Type it manually.', 'warn');
+    }
+
+    return false;
   }
 
   function getBankerBalanceApiKeyFromPanel() {
@@ -3609,6 +3683,10 @@
   }
 
   async function cancelCurrentRequestUnavailableFunds(record, banker) {
+    if (hasRequestAction(record.id, 'cancelledUnavailableFunds')) {
+      throw new Error('This request was already canceled from this browser. Discord messages are not resent.');
+    }
+
     const cancelledRecord = {
       ...record,
       cancelledAt: Date.now(),
@@ -3628,22 +3706,17 @@
         await editWebhookMessage(cancelledRecord.discordMessageId, buildMainCancelledPayload(cancelledRecord, banker));
         mainUpdated = true;
       } catch (err) {
-        console.warn('[Vault Request] Could not edit main request message after cancellation:', err);
+        console.warn('[Vault Request] Original Discord request could not be edited after cancellation. It may have been deleted by an admin; not reposting:', err);
         mainError = err.message || String(err);
       }
     }
 
-    if (!mainUpdated && webhookLooksValid(settings.webhookUrl)) {
-      try {
-        await postWebhook(buildMainCancelledPayload(cancelledRecord, banker), { wait: false });
-        mainUpdated = true;
-      } catch (err) {
-        console.warn('[Vault Request] Could not post main cancellation notice:', err);
-        mainError = mainError || err.message || String(err);
-      }
+    if (!hasRequestAction(record.id, 'cancelUserNoticeSent')) {
+      await postWebhook(buildUserCancelledPayload(cancelledRecord, banker), { kind: 'notify', wait: false });
+      markRequestAction(record.id, 'cancelUserNoticeSent');
     }
 
-    await postWebhook(buildUserCancelledPayload(cancelledRecord, banker), { kind: 'notify', wait: false });
+    markRequestAction(record.id, 'cancelledUnavailableFunds', { cancelledMainEdited: mainUpdated, cancelledMainError: mainError });
 
     updatePendingRequest(cancelledRecord.id, {
       status: 'cancelled',
@@ -3664,6 +3737,10 @@
   }
 
   async function markCurrentRequestFulfilled(record, banker) {
+    if (hasRequestAction(record.id, 'fulfilled')) {
+      throw new Error('This request was already marked fulfilled from this browser. Discord messages are not resent.');
+    }
+
     const completedRecord = {
       ...record,
       completedAt: Date.now(),
@@ -3674,15 +3751,23 @@
       throw new Error('Add the User Notice Webhook URL in Settings before marking requests fulfilled.');
     }
 
-    await postWebhook(buildUserFulfilledPayload(completedRecord, banker), { kind: 'notify', wait: false });
+    if (!hasRequestAction(record.id, 'fulfilledUserNoticeSent')) {
+      await postWebhook(buildUserFulfilledPayload(completedRecord, banker), { kind: 'notify', wait: false });
+      markRequestAction(record.id, 'fulfilledUserNoticeSent');
+    }
+
+    let mainEdited = false;
 
     if (record.discordMessageId && webhookLooksValid(settings.webhookUrl)) {
       try {
         await editWebhookMessage(record.discordMessageId, buildMainFulfilledPayload(completedRecord, banker));
+        mainEdited = true;
       } catch (err) {
-        console.warn('[Vault Request] Could not edit main request message after fulfilment:', err);
+        console.warn('[Vault Request] Original Discord request could not be edited after fulfilment. It may have been deleted by an admin; not reposting:', err);
       }
     }
+
+    markRequestAction(record.id, 'fulfilled', { fulfilledMainEdited: mainEdited });
 
     updatePendingRequest(record.id, {
       status: 'fulfilled',
@@ -3745,7 +3830,10 @@
         <div class="${APP}-cardTitle">Complete Request</div>
 
         <label for="${APP}-bankerName">Banker name and Torn ID</label>
-        <input id="${APP}-bankerName" type="text" placeholder="Banker_Name [123456]" value="${escapeHtml(getCurrentBankerDisplay())}" autocomplete="off" />
+        <div class="${APP}-inputBtnRow">
+          <input id="${APP}-bankerName" type="text" placeholder="Click Prefill or type: Banker_Name [123456]" value="${escapeHtml(getCurrentBankerDisplay())}" autocomplete="off" />
+          <button type="button" class="${APP}-inlineBtn" id="${APP}-prefillBankerInline">Prefill</button>
+        </div>
 
         <p class="${APP}-note">
           First manually complete the payment in Torn. Then click <b>Mark Request Fulfilled</b>.
@@ -3756,7 +3844,7 @@
         <div class="${APP}-row">
           <button type="button" class="${APP}-btn good" id="${APP}-markFulfilled">Mark Request Fulfilled</button>
           <button type="button" class="${APP}-btn danger" id="${APP}-cancelUnavailableFunds">Cancel - Unavailable Funds</button>
-          <button type="button" class="${APP}-btn" id="${APP}-refreshBanker">Refill Banker Name</button>
+          <button type="button" class="${APP}-btn" id="${APP}-refreshBanker">Prefill Banker Name/ID</button>
         </div>
       </div>
     `;
@@ -3766,8 +3854,10 @@
 
     $('closeFulfill').addEventListener('click', () => closePanel('fulfillPanel'));
 
+    $('prefillBankerInline').addEventListener('click', () => prefillBankerNameId(true));
+
     $('refreshBanker').addEventListener('click', () => {
-      $('bankerName').value = getCurrentBankerDisplay();
+      prefillBankerNameId(true);
     });
 
     $('saveBankerApiKey').addEventListener('click', () => saveBankerApiKeyFromPanel(true));

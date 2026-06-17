@@ -61,6 +61,7 @@ Click the button above to install or update the userscript through Tampermonkey.
 - Requests are not blocked by balance; bankers approve or deny manually.
 - When a banker clicks **Open Faction Controls** in Discord, the banker panel opens and checks the requester’s current faction vault balance using a Torn API key.
 - Banker panel has a **Save Banker API Key** button so the banker can save the key in their browser.
+- Banker completion panel has a banker name/ID **Prefill** button.
 - Banker completion panel has **Cancel - Unavailable Funds** to cancel a request and send the unavailable-funds notice.
 - The API key is only required to access the Settings panel.
 - Requesters do **not** check balance and do **not** need an API key to send requests.
@@ -156,6 +157,8 @@ The requester panel does not check or block vault balances.
 
 When a banker clicks **Open Faction Controls** in the Discord request embed, the script opens the completion panel on Torn. That panel shows the requested user and amount, then checks the requester’s current faction vault balance using a Torn API key with faction access.
 
+The banker can click **Prefill** beside the banker name/ID box to fill their Torn name and ID.
+
 The banker can click **Save Banker API Key** to save the faction-access key in their browser, then click **Check Current Balance** any time.
 
 The completion panel also has **Cancel - Unavailable Funds**. This cancels the request in the script, tries to edit the original Discord request to **Canceled**, and sends the user notice webhook saying the request was canceled due to unavailable vault funds.
@@ -191,3 +194,12 @@ This script does **not** use a backend or server. Settings are saved locally in 
 Do not publicly share a version of the script with your real Discord webhook URL or API key saved in it.
 
 The script does **not** automatically send Torn money. It only opens Torn faction controls with the user and amount prefilled. The banker must manually click **Give Money** and **Confirm**.
+
+
+## Discord Message Resend Rule
+
+Discord request/status messages are only sent once. If an admin deletes the original Discord request message, the script will not post a replacement message later.
+
+For timeout, fulfilled, or canceled states, the script will try to edit the original Discord request message when a message ID is available. If the edit fails because the message was deleted, the script updates local status only and does not resend that main Discord message.
+
+User notice webhook messages are also tracked locally so the same browser does not repeatedly send the same timeout, fulfilled, or canceled notice for the same request.
