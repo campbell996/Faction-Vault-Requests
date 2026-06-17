@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.15.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.16.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, final status notifications and pending cleanup, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -2061,6 +2061,15 @@
     updateRequestNotificationsPanel();
   }
 
+  function finalizePendingRequest(requestId, type, message) {
+    removePendingRequest(requestId);
+    if (message) {
+      addRequestNotification(type, message, requestId);
+    } else {
+      updateRequestNotificationsPanel();
+    }
+  }
+
   function getPendingRequestSummary() {
     ensureRequestStores();
     return settings.pendingRequests
@@ -2069,7 +2078,9 @@
   }
 
   function notificationIcon(type) {
-    if (type === 'expired') return '⏰';
+    if (type === 'expired' || type === 'timedout') return '⏰';
+    if (type === 'fulfilled') return '✅';
+    if (type === 'cancelled' || type === 'canceled') return '❌';
     if (type === 'sent') return '✅';
     if (type === 'error') return '⚠️';
     return 'ℹ️';
@@ -2129,7 +2140,10 @@
   async function expireRequest(record) {
     if (!record || record.status !== 'pending') return;
 
-    if (hasRequestAction(record.id, 'expired')) return;
+    if (hasRequestAction(record.id, 'expired')) {
+      removePendingRequest(record.id);
+      return;
+    }
 
     let editOk = false;
     let errorMessage = '';
@@ -2159,21 +2173,15 @@
 
     markRequestAction(record.id, 'expired', { expiredMainEdited: editOk });
 
-    updatePendingRequest(record.id, {
-      status: 'expired',
-      expiredAt: Date.now(),
-      expiryNotified: editOk,
-      userTimeoutNoticeSent: userNoticeOk,
-      expiryError: errorMessage
-    });
+    markRequestAction(record.id, 'removedFromPending', { finalStatus: 'expired' });
 
-    addRequestNotification(
-      'expired',
-      `Your ${record.amount?.formatted || ''} vault request timed out after 5 hours. Make another request if you still need it.`,
-      record.id
+    finalizePendingRequest(
+      record.id,
+      'timedout',
+      `Your ${record.amount?.formatted || ''} vault request timed out after 5 hours. It was removed from pending requests. Make another request if you still need it.`
     );
 
-    showToast('Vault request timed out after 5 hours. Make another request if you still need it.', 'warn');
+    showToast('Vault request timed out after 5 hours and was removed from pending requests.', 'warn');
   }
 
   async function checkPendingRequestTimeouts() {
@@ -3695,6 +3703,7 @@
 
   async function cancelCurrentRequestUnavailableFunds(record, banker) {
     if (hasRequestAction(record.id, 'cancelledUnavailableFunds')) {
+      removePendingRequest(record.id);
       throw new Error('This request was already canceled from this browser. Discord messages are not resent.');
     }
 
@@ -3729,19 +3738,12 @@
 
     markRequestAction(record.id, 'cancelledUnavailableFunds', { cancelledMainEdited: mainUpdated, cancelledMainError: mainError });
 
-    updatePendingRequest(cancelledRecord.id, {
-      status: 'cancelled',
-      cancelledAt: cancelledRecord.cancelledAt,
-      cancelReason: cancelledRecord.cancelReason,
-      banker,
-      mainCancellationUpdated: mainUpdated,
-      mainCancellationError: mainError
-    });
+    markRequestAction(cancelledRecord.id, 'removedFromPending', { finalStatus: 'cancelled' });
 
-    addRequestNotification(
-      'error',
-      `${cancelledRecord.amount?.formatted || ''} vault request was canceled due to unavailable vault funds by ${formatTornMention(banker)}.`,
-      cancelledRecord.id
+    finalizePendingRequest(
+      cancelledRecord.id,
+      'cancelled',
+      `${cancelledRecord.amount?.formatted || ''} vault request was canceled due to unavailable vault funds by ${formatTornMention(banker)} and removed from pending requests.`
     );
 
     return cancelledRecord;
@@ -3781,12 +3783,12 @@
 
     markRequestAction(record.id, 'fulfilled', { fulfilledMainEdited: mainEdited });
 
-    removePendingRequest(record.id);
+    markRequestAction(record.id, 'removedFromPending', { finalStatus: 'fulfilled' });
 
-    addRequestNotification(
-      'sent',
-      `${record.amount?.formatted || ''} vault request was marked fulfilled by ${formatTornMention(banker)}.`,
-      record.id
+    finalizePendingRequest(
+      record.id,
+      'fulfilled',
+      `${record.amount?.formatted || ''} vault request was fulfilled by ${formatTornMention(banker)} and removed from pending requests.`
     );
 
     return completedRecord;

@@ -210,3 +210,14 @@ User notice webhook messages are also tracked locally so the same browser does n
 When a banker marks a request fulfilled, that request is removed from the local pending request list and the panel updates immediately.
 
 Because this is a no-backend script, this cleanup applies to the browser/local storage that performs or knows about the fulfilled action. Removing a pending request from a different user's browser automatically would require a shared backend or Discord bot.
+
+
+## User Status Notifications And Pending Updates
+
+Final request statuses now update the local request panel:
+
+- **Fulfilled** sends the user notice webhook, adds a fulfilled notification, and removes the request from pending.
+- **Canceled** sends the user notice webhook, adds a canceled notification, and removes the request from pending.
+- **Timed out** sends the user timeout notice webhook when configured, adds a timed-out notification, and removes the request from pending.
+
+Because this is still a no-backend userscript, these local pending-list updates apply to the browser that has the request state. A banker fulfilling/canceling from a different browser can send the Discord/user notice, but automatically changing another user's already-open local panel would require a shared backend or bot.
