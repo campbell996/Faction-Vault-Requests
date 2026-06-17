@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      1.2.0
-// @description  Torn vault request panel that sends Discord embeds with banker buttons. Settings are locked behind faction API access. No backend/server.
+// @version      1.8.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -23,29 +23,29 @@
     Main features:
     - Clean RWPH-style launcher and panels.
     - Normal users can open the request panel and make a vault request.
+    - Requests are blocked if the requested amount is above that member's faction vault balance.
+    - If the member balance cannot be confirmed, the request is not sent.
     - Request amount supports: 1000000, 1m, 1b, 1t, 1.5m, $1,000,000.
     - Sends a Discord embedded message to the saved faction webhook.
-    - Discord embed includes:
-      - User name/id
-      - Requested amount
-      - Open Faction Controls button
-      - Open Player Profile button
-    - Faction controls link uses:
+    - Discord embed includes user, requested amount, verified balance, and banker instructions.
+    - Discord buttons contain the Torn links. Raw links are not printed inside the embed fields/message.
+    - Faction controls button opens:
       https://www.torn.com/factions.php?step=your#/tab=controls&giveMoneyTo=USER_ID&money=AMOUNT
     - Banker still manually checks, clicks Give Money, then Confirm.
 
     Settings:
     - Settings button opens a locked API verification panel first.
     - User must provide a Torn API key that can successfully read faction data.
-    - If faction API check fails, settings do not open.
     - Settings panel lets faction staff paste the Discord webhook URL.
     - Settings panel has preset buttons to change the embed style/message.
+    - Embed colour uses a colour picker and the preview updates live.
     - Settings are local to this browser because there is no backend/server.
 
     Optional sharing setup:
     - If you want to distribute a preconfigured copy, paste your faction webhook into
       DEFAULT_FACTION_WEBHOOK_URL below before sharing the script.
     - Do not publicly share a real webhook. Anyone with the webhook can post to that channel.
+    - Do not publicly share a script with your API key saved in browser storage.
   */
 
   const APP = 'TVRES_FACTION_API_LOCK';
@@ -53,54 +53,77 @@
 
   // Optional hard-coded webhook for your faction copy. Leave blank if using Settings panel.
   const DEFAULT_FACTION_WEBHOOK_URL = '';
+  const REQUEST_TIMEOUT_MS = 5 * 60 * 60 * 1000;
+  const REQUEST_CHECK_MS = 60 * 1000;
+  const MAX_NOTIFICATIONS = 25;
+  const MAX_PENDING_REQUESTS = 50;
 
   const DEFAULT_SETTINGS = {
     webhookUrl: DEFAULT_FACTION_WEBHOOK_URL,
+    userNotifyWebhookUrl: '',
     apiKey: '',
     userDisplay: '',
     amountInput: '',
     settingsUnlockedUntil: 0,
 
     embedTitle: 'New Vault Request',
-    embedDescription: '**{user}** requested **{amount}** from the faction vault.',
+    embedDescription: '**{user}** requested **{amount}** from the faction vault.\n\nThis request expires {expires}.',
     embedFooter: 'No backend/server. Manual banker approval required.',
     embedColor: 'e67300',
-    embedPreset: 'default'
+    embedPreset: 'default',
+
+    lastBalanceUserId: '',
+    lastBalanceAmount: null,
+    lastBalanceCheckedAt: 0,
+    panelPositions: {},
+    pendingRequests: [],
+    requestNotifications: [],
+    discordUserId: '',
+
+    timeoutNotifyTitle: 'Vault Request Timed Out',
+    timeoutNotifyMessage: '{user} your vault request for {amount} timed out before a banker could complete it.',
+    timeoutNotifyFooter: 'Please make another request if you still need it.',
+    timeoutNotifyColor: 'ed4245',
+
+    fulfilledNotifyTitle: 'Vault Request Fulfilled',
+    fulfilledNotifyMessage: '{user} your vault request for {amount} was fulfilled by {banker}.',
+    fulfilledNotifyFooter: 'Completed by faction banker.',
+    fulfilledNotifyColor: '3ba55d'
   };
 
   const PRESETS = {
     default: {
       name: 'Default',
       title: 'New Vault Request',
-      description: '**{user}** requested **{amount}** from the faction vault.',
+      description: '**{user}** requested **{amount}** from the faction vault.\n\nThis request expires {expires}.',
       footer: 'No backend/server. Manual banker approval required.',
       color: 'e67300'
     },
     rwph: {
       name: 'RWPH Style',
       title: 'Ranked War Vault Request',
-      description: 'A faction member has submitted a money request.\n\n**Member:** {user}\n**Amount:** {amount}\n\nOpen faction controls below, check the details, then manually pay.',
+      description: 'A faction member has submitted a money request.\n\n**Member:** {user}\n**Amount:** {amount}\n**Vault Balance:** {balance}\n**Expires:** {expires}\n\nBanker: open the button below, check the details, then manually pay.',
       footer: 'RWPH-style request helper. Banker must confirm manually.',
       color: 'ffb347'
     },
     banker: {
       name: 'Banker Detailed',
       title: 'Banker Action Needed',
-      description: '**{user}** needs **{amount}**.\n\nUse the button below to open faction controls with the user ID and amount prefilled.',
+      description: '**{user}** needs **{amount}**.\n\nVerified available vault balance: **{balance}**.\nExpires: **{expires}**.\n\nUse the button below to open faction controls with the user ID and amount prefilled.',
       footer: 'Please confirm the member and amount in Torn before sending.',
       color: '3ba55d'
     },
     compact: {
       name: 'Compact',
       title: 'Vault Request',
-      description: '{user} → {amount}',
+      description: '{user} → {amount}\nBalance checked: {balance}\nExpires: {expires}',
       footer: 'Manual payment required.',
       color: '5865f2'
     },
     urgent: {
       name: 'Urgent',
       title: 'URGENT Vault Request',
-      description: '⚠️ **Vault request waiting**\n\n**User:** {user}\n**Amount:** {amount}\n\nBanker action required.',
+      description: '⚠️ **Vault request waiting**\n\n**User:** {user}\n**Amount:** {amount}\n**Verified Balance:** {balance}\n**Expires:** {expires}\n\nBanker action required.',
       footer: 'Open controls, verify, then manually pay.',
       color: 'ed4245'
     }
@@ -108,6 +131,8 @@
 
   let settings = loadSettings();
   let submitLocked = false;
+  let balanceCheckLocked = false;
+  let balanceDebounceTimer = null;
 
   function loadSettings() {
     try {
@@ -134,27 +159,119 @@
       .trim();
   }
 
+  function formatMoney(amount) {
+    const safe = Number(amount || 0);
+    return `$${Math.max(0, Math.floor(safe)).toLocaleString('en-US')}`;
+  }
+
   function webhookLooksValid(url) {
     return /^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\/\d+\/[\w-]+/i.test(String(url || '').trim());
   }
 
-  function webhookUrlWithComponents(url) {
+  function webhookUrlWithParams(url, options = {}) {
     const raw = String(url || '').trim();
+    const withComponents = options.withComponents !== false;
+    const wait = !!options.wait;
 
     try {
       const u = new URL(raw);
-      u.searchParams.set('with_components', 'true');
+      if (withComponents) u.searchParams.set('with_components', 'true');
+      if (wait) u.searchParams.set('wait', 'true');
       return u.toString();
     } catch {
+      const params = [];
+      if (withComponents) params.push('with_components=true');
+      if (wait) params.push('wait=true');
       const join = raw.includes('?') ? '&' : '?';
-      return `${raw}${join}with_components=true`;
+      return params.length ? `${raw}${join}${params.join('&')}` : raw;
     }
+  }
+
+  function getWebhookEditUrl(messageId) {
+    const raw = String(settings.webhookUrl || '').trim();
+
+    try {
+      const u = new URL(raw);
+      u.search = '';
+      u.hash = '';
+      return `${u.toString().replace(/\/$/, '')}/messages/${encodeURIComponent(messageId)}`;
+    } catch {
+      const clean = raw.split('?')[0].replace(/\/$/, '');
+      return `${clean}/messages/${encodeURIComponent(messageId)}`;
+    }
+  }
+
+  function makeRequestId(userId, amountRaw) {
+    return `${Date.now()}-${String(userId || 'unknown')}-${String(amountRaw || '0')}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function normalizeDiscordUserId(value) {
+    return String(value || '').replace(/[^\d]/g, '').trim();
+  }
+
+  function getWebhookByKind(kind = 'request') {
+    return kind === 'notify' ? settings.userNotifyWebhookUrl : settings.webhookUrl;
+  }
+
+  function formatTornMention(user) {
+    const fallback = user?.display || user?.name || 'Unknown';
+    const name = cleanText(fallback).replace(/\s*\[\d+\]\s*$/, '') || 'Unknown';
+    const id = String(user?.id || '').replace(/[^\d]/g, '');
+    return id ? `@${name} [${id}]` : `@${name}`;
+  }
+
+  function parseTornUserDisplay(value) {
+    const parsed = parseUserDisplay(value);
+    return {
+      display: parsed.display || value || 'Unknown',
+      name: parsed.name || 'Unknown',
+      id: parsed.id || ''
+    };
+  }
+
+  function readFvrParam(name) {
+    const raw = `${location.search || ''}&${String(location.hash || '').replace(/^#/, '')}`;
+    const match = raw.match(new RegExp(`[?&#]${name}=([^&#]*)`, 'i'));
+    return match ? decodeURIComponent(match[1].replace(/\+/g, ' ')) : '';
+  }
+
+  function getCurrentPageRequestParams() {
+    return {
+      requestId: readFvrParam('fvrRequestId'),
+      userId: readFvrParam('fvrUserId') || readFvrParam('giveMoneyTo'),
+      userDisplay: readFvrParam('fvrUser'),
+      userName: readFvrParam('fvrUserName'),
+      amountRaw: String(readFvrParam('fvrAmountRaw') || readFvrParam('money')).replace(/[^\d]/g, ''),
+      amountFormatted: readFvrParam('fvrAmountFormatted'),
+      balanceFormatted: readFvrParam('fvrBalanceFormatted'),
+      createdAt: Number(readFvrParam('fvrCreatedAt') || 0),
+      expiresAt: Number(readFvrParam('fvrExpiresAt') || 0)
+    };
+  }
+
+  function parseBankerDisplay(value) {
+    const parsed = parseUserDisplay(value);
+    return {
+      display: parsed.display || value || 'Unknown Banker',
+      name: parsed.name || 'Unknown Banker',
+      id: parsed.id || ''
+    };
+  }
+
+  function cleanNoticeColor(value, fallback = '5865f2') {
+    const raw = String(value || '').replace('#', '').trim();
+    return /^[0-9a-f]{6}$/i.test(raw) ? raw.toLowerCase() : fallback;
   }
 
   function parseColor(value) {
     const raw = String(value || '').replace('#', '').trim();
     if (!/^[0-9a-f]{6}$/i.test(raw)) return 15105570;
     return parseInt(raw, 16);
+  }
+
+  function cleanHex(value) {
+    const raw = String(value || '').replace('#', '').trim();
+    return /^[0-9a-f]{6}$/i.test(raw) ? raw.toLowerCase() : 'e67300';
   }
 
   function getWin() {
@@ -391,7 +508,7 @@
       ok: true,
       amount,
       raw: String(amount),
-      formatted: `$${amount.toLocaleString('en-US')}`
+      formatted: formatMoney(amount)
     };
   }
 
@@ -406,42 +523,76 @@
       .slice(0, 2000);
   }
 
-  function templateValue(template, user, amount, controlsUrl, profileUrl) {
+  function escapeDiscordKeepAt(value) {
+    return String(value || '')
+      .replace(/`/g, "'")
+      .slice(0, 2000);
+  }
+
+  function templateValue(template, user, amount, balance, request = {}) {
+    const expiresAt = Number(request.expiresAt || 0);
+    const expiresDiscord = expiresAt ? `<t:${Math.floor(expiresAt / 1000)}:R>` : '5 hours';
+    const expiresFull = expiresAt ? `<t:${Math.floor(expiresAt / 1000)}:F>` : 'Not set';
     return String(template || '')
       .replaceAll('{user}', user.display || `${user.name} [${user.id}]`)
       .replaceAll('{name}', user.name || 'Unknown')
       .replaceAll('{id}', user.id || '')
       .replaceAll('{amount}', amount.formatted || '')
       .replaceAll('{raw}', amount.raw || '')
-      .replaceAll('{profile}', profileUrl || '')
-      .replaceAll('{controls}', controlsUrl || '');
+      .replaceAll('{balance}', balance?.formatted || 'Not checked')
+      .replaceAll('{expires}', expiresDiscord)
+      .replaceAll('{expiresFull}', expiresFull)
+      .replaceAll('{status}', request.status || 'Pending');
   }
 
-  function buildPayload(user, amount) {
+  function buildPayload(user, amount, balance, request = {}) {
     const profileUrl = user.id ? `https://www.torn.com/profiles.php?XID=${user.id}` : '';
-    const controlsUrl = user.id ? makeFactionControlsGiveMoneyUrl(user.id, amount.raw) : 'https://www.torn.com/factions.php?step=your#/tab=controls';
+    let controlsUrl = user.id ? makeFactionControlsGiveMoneyUrl(user.id, amount.raw) : 'https://www.torn.com/factions.php?step=your#/tab=controls';
+    const expiresAt = Number(request.expiresAt || (Date.now() + REQUEST_TIMEOUT_MS));
 
-    const title = templateValue(settings.embedTitle, user, amount, controlsUrl, profileUrl).slice(0, 256);
-    const description = templateValue(settings.embedDescription, user, amount, controlsUrl, profileUrl).slice(0, 4000);
-    const footer = templateValue(settings.embedFooter, user, amount, controlsUrl, profileUrl).slice(0, 2048);
+    const fvrParams = new URLSearchParams({
+      fvrRequestId: request.id || '',
+      fvrUser: user.display || `${user.name} [${user.id}]`,
+      fvrUserName: user.name || '',
+      fvrUserId: user.id || '',
+      fvrAmountRaw: amount.raw || '',
+      fvrAmountFormatted: amount.formatted || '',
+      fvrBalanceFormatted: balance?.formatted || '',
+      fvrCreatedAt: String(request.createdAt || Date.now()),
+      fvrExpiresAt: String(expiresAt)
+    });
+
+    controlsUrl += `&${fvrParams.toString()}`;
+    const expiresUnix = Math.floor(expiresAt / 1000);
+
+    const templateRequest = {
+      ...request,
+      status: request.status || 'Pending',
+      expiresAt
+    };
+
+    const title = templateValue(settings.embedTitle, user, amount, balance, templateRequest).slice(0, 256);
+    const description = templateValue(settings.embedDescription, user, amount, balance, templateRequest).slice(0, 4000);
+    const footer = templateValue(settings.embedFooter, user, amount, balance, templateRequest).slice(0, 2048);
 
     const fields = [
       { name: 'User', value: escapeDiscord(user.display || `${user.name} [${user.id}]`), inline: true },
       { name: 'Amount Requested', value: amount.formatted, inline: true },
-      { name: 'Raw Amount', value: amount.raw, inline: true },
-      { name: 'Banker Action', value: 'Open the button below, check the prefilled user and amount, then manually click **Give Money** and **Confirm** in Torn.', inline: false },
-      { name: 'Torn Controls Link', value: controlsUrl, inline: false }
+      { name: 'Verified Vault Balance', value: balance?.formatted || 'Not checked', inline: true },
+      { name: 'Status', value: request.status || 'Pending', inline: true },
+      { name: 'Expires', value: `<t:${expiresUnix}:R>`, inline: true },
+      { name: 'Expires At', value: `<t:${expiresUnix}:F>`, inline: false },
+      { name: 'Banker Action', value: 'Use the button below, check the prefilled user and amount, then manually click **Give Money** and **Confirm** in Torn.', inline: false }
     ];
 
-    if (profileUrl) {
-      fields.splice(3, 0, { name: 'Profile', value: profileUrl, inline: false });
-    }
+    const discordUserId = normalizeDiscordUserId(request.discordUserId || settings.discordUserId);
+    const content = discordUserId ? `<@${discordUserId}> Your vault request was sent to the faction bankers.` : '';
 
     return {
       username: 'Torn Vault Request',
       avatar_url: 'https://www.torn.com/favicon.ico',
-      content: '',
-      allowed_mentions: { parse: [] },
+      content,
+      allowed_mentions: discordUserId ? { users: [discordUserId], parse: [] } : { parse: [] },
       embeds: [
         {
           title: escapeDiscord(title || 'New Vault Request'),
@@ -474,14 +625,178 @@
     };
   }
 
-  async function postWebhook(payload) {
-    if (!webhookLooksValid(settings.webhookUrl)) {
-      throw new Error('Add a valid Discord webhook URL in Settings first.');
+  function buildExpiredPayload(record) {
+    const user = record.user || { display: 'Unknown', name: 'Unknown', id: '' };
+    const amount = record.amount || { formatted: '$0', raw: '0' };
+    const balance = record.balance || { formatted: 'Not checked' };
+    const expiredAt = Number(record.expiresAt || Date.now());
+    const discordUserId = normalizeDiscordUserId(record.discordUserId);
+
+    return {
+      username: 'Torn Vault Request',
+      avatar_url: 'https://www.torn.com/favicon.ico',
+      content: discordUserId ? `<@${discordUserId}> Your vault request timed out after 5 hours. Please make another request if you still need it.` : '',
+      allowed_mentions: discordUserId ? { users: [discordUserId], parse: [] } : { parse: [] },
+      embeds: [
+        {
+          title: 'Vault Request Expired',
+          description: `**${escapeDiscord(user.display || `${user.name} [${user.id}]`)}** requested **${amount.formatted}**, but the request timed out after 5 hours.`,
+          color: 0x747f8d,
+          fields: [
+            { name: 'User', value: escapeDiscord(user.display || `${user.name} [${user.id}]`), inline: true },
+            { name: 'Amount Requested', value: amount.formatted, inline: true },
+            { name: 'Verified Vault Balance', value: balance.formatted || 'Not checked', inline: true },
+            { name: 'Status', value: 'Expired', inline: true },
+            { name: 'Expired At', value: `<t:${Math.floor(expiredAt / 1000)}:F>`, inline: false },
+            { name: 'Next Step', value: 'The user needs to make another request if they still need funds.', inline: false }
+          ],
+          footer: { text: 'Request expired. Buttons removed.' },
+          timestamp: new Date().toISOString()
+        }
+      ],
+      components: []
+    };
+  }
+
+  function noticeTemplateValue(template, record = {}, banker = {}) {
+    const user = record.user || {};
+    const amount = record.amount || { formatted: '$0', raw: '0' };
+    const balance = record.balance || { formatted: 'Not checked' };
+    const createdAt = Number(record.createdAt || Date.now());
+    const expiresAt = Number(record.expiresAt || Date.now());
+    const completedAt = Number(record.completedAt || Date.now());
+
+    return String(template || '')
+      .replaceAll('{user}', formatTornMention(user))
+      .replaceAll('{tornname}', formatTornMention(user))
+      .replaceAll('{name}', user.name || 'Unknown')
+      .replaceAll('{id}', user.id || '')
+      .replaceAll('{amount}', amount.formatted || '$0')
+      .replaceAll('{raw}', amount.raw || '0')
+      .replaceAll('{balance}', balance.formatted || 'Not checked')
+      .replaceAll('{banker}', banker?.display ? formatTornMention(banker) : '@Unknown Banker')
+      .replaceAll('{bankerName}', banker?.name || 'Unknown Banker')
+      .replaceAll('{bankerId}', banker?.id || '')
+      .replaceAll('{createdAt}', `<t:${Math.floor(createdAt / 1000)}:F>`)
+      .replaceAll('{expires}', `<t:${Math.floor(expiresAt / 1000)}:R>`)
+      .replaceAll('{expiresFull}', `<t:${Math.floor(expiresAt / 1000)}:F>`)
+      .replaceAll('{timedOutAt}', `<t:${Math.floor(Date.now() / 1000)}:F>`)
+      .replaceAll('{completedAt}', `<t:${Math.floor(completedAt / 1000)}:F>`);
+  }
+
+  function buildUserTimeoutPayload(record) {
+    const user = record.user || { display: 'Unknown', name: 'Unknown', id: '' };
+    const amount = record.amount || { formatted: '$0', raw: '0' };
+    const balance = record.balance || { formatted: 'Not checked' };
+    const expiredAt = Number(record.expiresAt || Date.now());
+
+    const title = noticeTemplateValue(settings.timeoutNotifyTitle, record).slice(0, 256) || 'Vault Request Timed Out';
+    const description = noticeTemplateValue(settings.timeoutNotifyMessage, record).slice(0, 4000);
+    const footer = noticeTemplateValue(settings.timeoutNotifyFooter, record).slice(0, 2048);
+
+    return {
+      username: 'Torn Vault Request Notice',
+      avatar_url: 'https://www.torn.com/favicon.ico',
+      content: '',
+      allowed_mentions: { parse: [] },
+      embeds: [
+        {
+          title: escapeDiscord(title),
+          description: escapeDiscordKeepAt(description || `${formatTornMention(user)} your vault request timed out before a banker could complete it.`),
+          color: parseColor(settings.timeoutNotifyColor),
+          fields: [
+            { name: 'User', value: escapeDiscordKeepAt(formatTornMention(user)), inline: true },
+            { name: 'Amount Requested', value: amount.formatted || '$0', inline: true },
+            { name: 'Verified Vault Balance', value: balance.formatted || 'Not checked', inline: true },
+            { name: 'Status', value: 'Timed out', inline: true },
+            { name: 'Timed Out At', value: `<t:${Math.floor(expiredAt / 1000)}:F>`, inline: false },
+            { name: 'What To Do', value: 'Please make another vault request if you still need the money.', inline: false }
+          ],
+          footer: { text: footer || 'Request timed out after 5 hours.' },
+          timestamp: new Date().toISOString()
+        }
+      ],
+      components: []
+    };
+  }
+
+  function buildUserFulfilledPayload(record, banker) {
+    const user = record.user || { display: 'Unknown', name: 'Unknown', id: '' };
+    const amount = record.amount || { formatted: '$0', raw: '0' };
+    const completedAt = Number(record.completedAt || Date.now());
+
+    const title = noticeTemplateValue(settings.fulfilledNotifyTitle, record, banker).slice(0, 256) || 'Vault Request Fulfilled';
+    const description = noticeTemplateValue(settings.fulfilledNotifyMessage, record, banker).slice(0, 4000);
+    const footer = noticeTemplateValue(settings.fulfilledNotifyFooter, record, banker).slice(0, 2048);
+
+    return {
+      username: 'Torn Vault Request Notice',
+      avatar_url: 'https://www.torn.com/favicon.ico',
+      content: '',
+      allowed_mentions: { parse: [] },
+      embeds: [
+        {
+          title: escapeDiscord(title),
+          description: escapeDiscordKeepAt(description || `${formatTornMention(user)} your vault request was fulfilled by ${formatTornMention(banker)}.`),
+          color: parseColor(settings.fulfilledNotifyColor),
+          fields: [
+            { name: 'User', value: escapeDiscordKeepAt(formatTornMention(user)), inline: true },
+            { name: 'Amount', value: amount.formatted || '$0', inline: true },
+            { name: 'Banker', value: escapeDiscordKeepAt(formatTornMention(banker)), inline: true },
+            { name: 'Completed At', value: `<t:${Math.floor(completedAt / 1000)}:F>`, inline: false }
+          ],
+          footer: { text: footer || 'Completed by faction banker.' },
+          timestamp: new Date().toISOString()
+        }
+      ],
+      components: []
+    };
+  }
+
+  function buildMainFulfilledPayload(record, banker) {
+    const user = record.user || { display: 'Unknown', name: 'Unknown', id: '' };
+    const amount = record.amount || { formatted: '$0', raw: '0' };
+    const balance = record.balance || { formatted: 'Not checked' };
+    const completedAt = Number(record.completedAt || Date.now());
+
+    return {
+      username: 'Torn Vault Request',
+      avatar_url: 'https://www.torn.com/favicon.ico',
+      content: '',
+      allowed_mentions: { parse: [] },
+      embeds: [
+        {
+          title: 'Vault Request Fulfilled',
+          description: `**${escapeDiscordKeepAt(formatTornMention(user))}** requested **${amount.formatted}** and it was fulfilled by **${escapeDiscordKeepAt(formatTornMention(banker))}**.`,
+          color: parseColor(settings.fulfilledNotifyColor),
+          fields: [
+            { name: 'User', value: escapeDiscordKeepAt(formatTornMention(user)), inline: true },
+            { name: 'Amount Requested', value: amount.formatted || '$0', inline: true },
+            { name: 'Verified Vault Balance', value: balance.formatted || 'Not checked', inline: true },
+            { name: 'Status', value: 'Fulfilled', inline: true },
+            { name: 'Banker', value: escapeDiscordKeepAt(formatTornMention(banker)), inline: true },
+            { name: 'Completed At', value: `<t:${Math.floor(completedAt / 1000)}:F>`, inline: false }
+          ],
+          footer: { text: 'Request fulfilled. Buttons removed.' },
+          timestamp: new Date().toISOString()
+        }
+      ],
+      components: []
+    };
+  }
+
+  async function postWebhook(payload, options = {}) {
+    const webhook = getWebhookByKind(options.kind || 'request');
+
+    if (!webhookLooksValid(webhook)) {
+      throw new Error(options.kind === 'notify'
+        ? 'Add a valid user notification webhook URL in Settings first.'
+        : 'Add a valid Discord webhook URL in Settings first.');
     }
 
     const res = await gmRequest({
       method: 'POST',
-      url: webhookUrlWithComponents(settings.webhookUrl),
+      url: webhookUrlWithParams(webhook, { withComponents: true, wait: !!options.wait }),
       headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify(payload),
       errorMessage: 'Discord webhook request failed.',
@@ -495,10 +810,33 @@
     return res;
   }
 
-  async function tornApiGet(url) {
+  async function editWebhookMessage(messageId, payload) {
+    if (!messageId) throw new Error('Missing Discord message ID.');
+    if (!webhookLooksValid(settings.webhookUrl)) {
+      throw new Error('Add a valid Discord webhook URL in Settings first.');
+    }
+
+    const res = await gmRequest({
+      method: 'PATCH',
+      url: webhookUrlWithParams(getWebhookEditUrl(messageId), { withComponents: true, wait: false }),
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify(payload),
+      errorMessage: 'Discord webhook edit failed.',
+      timeoutMessage: 'Discord webhook edit timed out.'
+    });
+
+    if (!(res.status >= 200 && res.status < 300)) {
+      throw new Error(`Discord edit returned HTTP ${res.status}. ${String(res.responseText || '').slice(0, 180)}`);
+    }
+
+    return res;
+  }
+
+  async function tornApiGet(url, headers = {}) {
     const res = await gmRequest({
       method: 'GET',
       url,
+      headers,
       errorMessage: 'Torn API request failed.',
       timeoutMessage: 'Torn API request timed out.'
     });
@@ -517,10 +855,7 @@
     if (!data || typeof data !== 'object') return false;
     if (data.error) return false;
 
-    // Old API normally returns direct faction fields.
     if (data.ID || data.name || data.tag || data.leader || data.members || data.basic) return true;
-
-    // V2-style wrappers vary; accept obvious faction-like content.
     if (data.faction || data.data?.faction || data.data?.name || data.data?.members) return true;
 
     return false;
@@ -540,12 +875,11 @@
       throw new Error('Paste a valid Torn API key first.');
     }
 
-    // Old API is included because many Torn userscripts still rely on it.
-    // V2 fallback is included in case old endpoint behavior changes.
+    const stamp = Date.now();
     const urls = [
-      `https://api.torn.com/faction/?selections=basic&key=${encodeURIComponent(key)}`,
-      `https://api.torn.com/faction/?selections=&key=${encodeURIComponent(key)}`,
-      `https://api.torn.com/v2/faction/basic?key=${encodeURIComponent(key)}`
+      `https://api.torn.com/faction/?selections=basic&key=${encodeURIComponent(key)}&timestamp=${stamp}`,
+      `https://api.torn.com/faction/?selections=&key=${encodeURIComponent(key)}&timestamp=${stamp}`,
+      `https://api.torn.com/v2/faction/basic?key=${encodeURIComponent(key)}&timestamp=${stamp}`
     ];
 
     const errors = [];
@@ -568,6 +902,534 @@
     throw new Error(errors[0] || 'Faction API check failed. This key may not have faction API access.');
   }
 
+  function normalizeMoneyValue(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return Math.floor(value);
+    if (typeof value === 'string') {
+      const cleaned = value.replace(/[$,\s]/g, '');
+      if (/^-?\d+(\.\d+)?$/.test(cleaned)) return Math.floor(Number(cleaned));
+    }
+    return null;
+  }
+
+  async function fetchFactionBalanceData(apiKey) {
+    const key = cleanText(apiKey);
+
+    if (!key || key.length < 8) {
+      throw new Error('A saved Torn API key with faction access is required for balance checks.');
+    }
+
+    const stamp = Date.now();
+
+    const attempts = [
+      {
+        url: `https://api.torn.com/v2/faction/balance?cat=all&timestamp=${stamp}`,
+        headers: { Authorization: `ApiKey ${key}`, Accept: 'application/json' }
+      },
+      {
+        url: `https://api.torn.com/v2/faction/balance?cat=all&key=${encodeURIComponent(key)}&timestamp=${stamp}`,
+        headers: { Accept: 'application/json' }
+      },
+      {
+        url: `https://api.torn.com/faction/?selections=balance&key=${encodeURIComponent(key)}&timestamp=${stamp}`,
+        headers: { Accept: 'application/json' }
+      },
+      {
+        url: `https://api.torn.com/faction/?selections=currency,basic&key=${encodeURIComponent(key)}&timestamp=${stamp}`,
+        headers: { Accept: 'application/json' }
+      },
+      {
+        url: `https://api.torn.com/faction/?selections=donations,basic&key=${encodeURIComponent(key)}&timestamp=${stamp}`,
+        headers: { Accept: 'application/json' }
+      }
+    ];
+
+    const errors = [];
+
+    for (const attempt of attempts) {
+      try {
+        const { status, data } = await tornApiGet(attempt.url, attempt.headers);
+
+        if (data?.error) {
+          errors.push(getApiError(data) || 'Torn API returned an error.');
+          continue;
+        }
+
+        if (status >= 200 && status < 300 && data && typeof data === 'object') {
+          return data;
+        }
+
+        errors.push(`Torn API returned HTTP ${status}.`);
+      } catch (err) {
+        errors.push(err.message || String(err));
+      }
+    }
+
+    throw new Error(errors[0] || 'Could not read faction vault balance data.');
+  }
+
+  function collectMemberBalanceCandidates(data, userId) {
+    const target = String(userId || '').trim();
+    const candidates = [];
+    const seen = new WeakSet();
+
+    const preferredFields = [
+      'money',
+      'balance',
+      'money_balance',
+      'vault_balance',
+      'faction_balance',
+      'faction_money',
+      'funds',
+      'cash',
+      'amount',
+      'available',
+      'available_money',
+      'current',
+      'total'
+    ];
+
+    const idFields = [
+      'id',
+      'user_id',
+      'userId',
+      'torn_id',
+      'tornId',
+      'player_id',
+      'playerId',
+      'XID',
+      'xid',
+      'uid'
+    ];
+
+    function pathScore(path, field) {
+      const p = path.join('.').toLowerCase();
+      const f = String(field || '').toLowerCase();
+      let score = 0;
+
+      if (p.includes('balance')) score += 14;
+      if (p.includes('balances')) score += 14;
+      if (p.includes('member')) score += 10;
+      if (p.includes('members')) score += 10;
+      if (p.includes('vault')) score += 10;
+      if (p.includes('faction')) score += 7;
+      if (p.includes('bank')) score += 7;
+      if (p.includes('money')) score += 5;
+      if (p.includes('donation')) score += 3;
+
+      if (f === 'money') score += 16;
+      if (f.includes('balance')) score += 14;
+      if (f.includes('vault')) score += 12;
+      if (f.includes('faction')) score += 8;
+      if (f.includes('available')) score += 8;
+      if (f === 'cash' || f === 'funds') score += 5;
+      if (f === 'amount' || f === 'total') score += 2;
+
+      return score;
+    }
+
+    function objectHasMatchingId(obj, keyName) {
+      if (String(keyName) === target) return true;
+
+      for (const idField of idFields) {
+        if (Object.prototype.hasOwnProperty.call(obj, idField) && String(obj[idField]) === target) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    function addCandidate(amount, field, path, scoreBoost = 0) {
+      if (amount === null || !Number.isFinite(amount) || amount < 0) return;
+
+      candidates.push({
+        amount,
+        field,
+        path: path.join('.'),
+        score: pathScore(path, field) + scoreBoost
+      });
+    }
+
+    function addCandidatesFromObject(obj, path, keyName) {
+      if (!obj || typeof obj !== 'object') return;
+      if (!objectHasMatchingId(obj, keyName)) return;
+
+      for (const field of preferredFields) {
+        if (!Object.prototype.hasOwnProperty.call(obj, field)) continue;
+        addCandidate(normalizeMoneyValue(obj[field]), field, path.concat(field), 0);
+      }
+
+      for (const wrapField of ['money', 'balance', 'balances', 'vault', 'faction', 'bank', 'member']) {
+        const wrap = obj[wrapField];
+        if (!wrap || typeof wrap !== 'object') continue;
+
+        for (const field of preferredFields) {
+          if (!Object.prototype.hasOwnProperty.call(wrap, field)) continue;
+          addCandidate(normalizeMoneyValue(wrap[field]), `${wrapField}.${field}`, path.concat(wrapField, field), 4);
+        }
+      }
+    }
+
+    function walk(node, path = [], keyName = '') {
+      if (node === null || node === undefined) return;
+
+      if (typeof node !== 'object') {
+        if (String(keyName) === target) {
+          addCandidate(normalizeMoneyValue(node), keyName, path, 5);
+        }
+        return;
+      }
+
+      if (seen.has(node)) return;
+      seen.add(node);
+
+      if (Array.isArray(node)) {
+        node.forEach((child, index) => walk(child, path.concat(String(index)), String(index)));
+        return;
+      }
+
+      addCandidatesFromObject(node, path, keyName);
+
+      for (const [key, value] of Object.entries(node)) {
+        if (String(key) === target && typeof value !== 'object') {
+          addCandidate(normalizeMoneyValue(value), key, path.concat(key), 4);
+        }
+
+        walk(value, path.concat(key), key);
+      }
+    }
+
+    walk(data, [], '');
+
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates;
+  }
+
+  async function getMemberVaultBalance(userId, options = {}) {
+    const key = cleanText(settings.apiKey);
+
+    if (!key) {
+      throw new Error('Settings API key is missing. A faction API key is required to check vault balances.');
+    }
+
+    const data = await fetchFactionBalanceData(key);
+    const candidates = collectMemberBalanceCandidates(data, userId);
+
+    if (!candidates.length) {
+      if (options.debug) console.log('[Vault Request] Balance response:', data);
+      throw new Error('Could not find this member balance in the faction vault API response.');
+    }
+
+    const best = candidates[0];
+
+    settings.lastBalanceUserId = String(userId);
+    settings.lastBalanceAmount = best.amount;
+    settings.lastBalanceCheckedAt = Date.now();
+    saveSettings();
+
+    return {
+      amount: best.amount,
+      formatted: formatMoney(best.amount),
+      source: best.path,
+      checkedAt: settings.lastBalanceCheckedAt
+    };
+  }
+
+  function getCachedBalanceForUser(userId) {
+    if (String(settings.lastBalanceUserId || '') !== String(userId || '')) return null;
+    if (settings.lastBalanceAmount === null || settings.lastBalanceAmount === undefined) return null;
+
+    return {
+      amount: Number(settings.lastBalanceAmount || 0),
+      formatted: formatMoney(settings.lastBalanceAmount),
+      checkedAt: Number(settings.lastBalanceCheckedAt || 0)
+    };
+  }
+
+  function updateBalanceStatus(message, type = 'warn') {
+    const el = $('balanceStatus');
+    if (!el) return;
+
+    el.textContent = message;
+    el.className = `${APP}-preview ${type === 'ok' ? 'ok' : 'warn'}`;
+  }
+
+  function updateBalanceDisplay() {
+    const user = parseUserDisplay($('user')?.value || '');
+    const amount = parseAmount($('amount')?.value || '');
+
+    if (!user.id) {
+      updateBalanceStatus('Vault balance: enter a Torn ID to check balance.', 'warn');
+      return;
+    }
+
+    const cached = getCachedBalanceForUser(user.id);
+
+    if (!cached) {
+      updateBalanceStatus('Vault balance: not checked yet. It will be checked before sending.', 'warn');
+      return;
+    }
+
+    const ago = Math.max(0, Math.floor((Date.now() - cached.checkedAt) / 1000));
+
+    if (!amount.ok) {
+      updateBalanceStatus(`Vault balance: ${cached.formatted}. Checked ${ago}s ago.`, 'ok');
+      return;
+    }
+
+    if (amount.amount <= cached.amount) {
+      updateBalanceStatus(`Vault balance: ${cached.formatted}. Request is within available balance.`, 'ok');
+    } else {
+      updateBalanceStatus(`Vault balance: ${cached.formatted}. Request is too high.`, 'warn');
+    }
+  }
+
+  async function refreshBalanceForCurrentUser(showToastOnSuccess = false) {
+    if (balanceCheckLocked) return null;
+
+    const user = parseUserDisplay($('user')?.value || settings.userDisplay || '');
+    if (!user.id) {
+      updateBalanceStatus('Vault balance: enter a Torn ID to check balance.', 'warn');
+      return null;
+    }
+
+    if (!settings.apiKey) {
+      updateBalanceStatus('Vault balance: Settings API key required before requests can be sent.', 'warn');
+      return null;
+    }
+
+    balanceCheckLocked = true;
+    updateBalanceStatus('Vault balance: checking...', 'warn');
+
+    try {
+      const balance = await getMemberVaultBalance(user.id);
+      updateBalanceDisplay();
+      if (showToastOnSuccess) showToast(`Vault balance checked: ${balance.formatted}`, 'ok');
+      return balance;
+    } catch (err) {
+      console.error('[Vault Request] Balance check failed:', err);
+      updateBalanceStatus(err.message || 'Vault balance check failed.', 'warn');
+      return null;
+    } finally {
+      balanceCheckLocked = false;
+    }
+  }
+
+  function debounceBalanceCheck() {
+    clearTimeout(balanceDebounceTimer);
+    balanceDebounceTimer = setTimeout(() => {
+      if (!document.getElementById(`${APP}-requestPanel`)) return;
+      const user = parseUserDisplay($('user')?.value || '');
+      if (user.id && settings.apiKey) refreshBalanceForCurrentUser(false);
+      else updateBalanceDisplay();
+    }, 900);
+  }
+
+  async function verifyRequestAgainstVaultBalance(user, amount) {
+    const balance = await getMemberVaultBalance(user.id);
+
+    if (amount.amount > balance.amount) {
+      throw new Error(`Request blocked. ${user.display} only has ${balance.formatted} available in the faction vault.`);
+    }
+
+    return balance;
+  }
+
+
+  function ensureRequestStores() {
+    if (!Array.isArray(settings.pendingRequests)) settings.pendingRequests = [];
+    if (!Array.isArray(settings.requestNotifications)) settings.requestNotifications = [];
+    return settings;
+  }
+
+  function addRequestNotification(type, message, requestId = '') {
+    ensureRequestStores();
+
+    settings.requestNotifications.unshift({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type,
+      message,
+      requestId,
+      time: Date.now(),
+      read: false
+    });
+
+    settings.requestNotifications = settings.requestNotifications.slice(0, MAX_NOTIFICATIONS);
+    saveSettings();
+    updateRequestNotificationsPanel();
+  }
+
+  function markRequestNotificationsRead() {
+    ensureRequestStores();
+    settings.requestNotifications = settings.requestNotifications.map(n => ({ ...n, read: true }));
+    saveSettings();
+    updateRequestNotificationsPanel();
+  }
+
+  function storePendingRequest(record) {
+    ensureRequestStores();
+
+    settings.pendingRequests.unshift(record);
+    settings.pendingRequests = settings.pendingRequests.slice(0, MAX_PENDING_REQUESTS);
+    saveSettings();
+    updateRequestNotificationsPanel();
+  }
+
+  function updatePendingRequest(requestId, patch) {
+    ensureRequestStores();
+
+    settings.pendingRequests = settings.pendingRequests.map(req =>
+      req.id === requestId ? { ...req, ...patch } : req
+    );
+
+    saveSettings();
+    updateRequestNotificationsPanel();
+  }
+
+  function getPendingRequestSummary() {
+    ensureRequestStores();
+    return settings.pendingRequests
+      .filter(req => req.status === 'pending')
+      .slice(0, 5);
+  }
+
+  function notificationIcon(type) {
+    if (type === 'expired') return '⏰';
+    if (type === 'sent') return '✅';
+    if (type === 'error') return '⚠️';
+    return 'ℹ️';
+  }
+
+  function relativeTime(ms) {
+    const diff = Math.max(0, Date.now() - Number(ms || Date.now()));
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins === 1) return '1 minute ago';
+    if (mins < 60) return `${mins} minutes ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours === 1) return '1 hour ago';
+    return `${hours} hours ago`;
+  }
+
+  function updateRequestNotificationsPanel() {
+    const list = $('requestNotifications');
+    const pendingEl = $('pendingRequests');
+    if (!list && !pendingEl) return;
+
+    ensureRequestStores();
+
+    if (list) {
+      const notifications = settings.requestNotifications.slice(0, 6);
+      if (!notifications.length) {
+        list.innerHTML = `<div class="${APP}-tiny">No request notifications yet.</div>`;
+      } else {
+        list.innerHTML = notifications.map(n => `
+          <div class="${APP}-notice ${n.type || 'info'} ${n.read ? 'read' : 'unread'}">
+            <div><b>${notificationIcon(n.type)} ${escapeHtml(n.message)}</b></div>
+            <div class="${APP}-tiny">${relativeTime(n.time)}</div>
+          </div>
+        `).join('');
+      }
+    }
+
+    if (pendingEl) {
+      const pending = getPendingRequestSummary();
+      if (!pending.length) {
+        pendingEl.innerHTML = `<div class="${APP}-tiny">No pending requests.</div>`;
+      } else {
+        pendingEl.innerHTML = pending.map(req => {
+          const expiresIn = Math.max(0, Number(req.expiresAt || 0) - Date.now());
+          const mins = Math.ceil(expiresIn / 60000);
+          return `
+            <div class="${APP}-notice pending">
+              <div><b>${escapeHtml(req.amount?.formatted || '$0')}</b> request pending</div>
+              <div class="${APP}-tiny">Expires in about ${mins} minute${mins === 1 ? '' : 's'}.</div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+  }
+
+  async function expireRequest(record) {
+    if (!record || record.status !== 'pending') return;
+
+    let editOk = false;
+    let errorMessage = '';
+
+    if (record.discordMessageId) {
+      try {
+        await editWebhookMessage(record.discordMessageId, buildExpiredPayload(record));
+        editOk = true;
+      } catch (err) {
+        console.error('[Vault Request] Failed to edit expired Discord request:', err);
+        errorMessage = err.message || String(err);
+      }
+    }
+
+    if (!editOk) {
+      try {
+        await postWebhook(buildExpiredPayload(record), { wait: false });
+        editOk = true;
+      } catch (err) {
+        console.error('[Vault Request] Failed to post expired Discord notification:', err);
+        errorMessage = err.message || String(err);
+      }
+    }
+
+    let userNoticeOk = false;
+
+    if (webhookLooksValid(settings.userNotifyWebhookUrl)) {
+      try {
+        await postWebhook(buildUserTimeoutPayload(record), { kind: 'notify', wait: false });
+        userNoticeOk = true;
+      } catch (err) {
+        console.error('[Vault Request] Failed to send user timeout webhook:', err);
+        errorMessage = errorMessage || err.message || String(err);
+      }
+    }
+
+    updatePendingRequest(record.id, {
+      status: 'expired',
+      expiredAt: Date.now(),
+      expiryNotified: editOk,
+      userTimeoutNoticeSent: userNoticeOk,
+      expiryError: errorMessage
+    });
+
+    addRequestNotification(
+      'expired',
+      `Your ${record.amount?.formatted || ''} vault request timed out after 5 hours. Make another request if you still need it.`,
+      record.id
+    );
+
+    showToast('Vault request timed out after 5 hours. Make another request if you still need it.', 'warn');
+  }
+
+  async function checkPendingRequestTimeouts() {
+    ensureRequestStores();
+
+    const now = Date.now();
+    const due = settings.pendingRequests.filter(req =>
+      req.status === 'pending' &&
+      Number(req.expiresAt || 0) <= now &&
+      !req.expiryCheckRunning
+    );
+
+    for (const req of due) {
+      updatePendingRequest(req.id, { expiryCheckRunning: true });
+      await expireRequest({ ...req, expiryCheckRunning: true });
+    }
+
+    updateRequestNotificationsPanel();
+  }
+
+  function startRequestTimeoutWatcher() {
+    setTimeout(checkPendingRequestTimeouts, 2500);
+    setInterval(checkPendingRequestTimeouts, REQUEST_CHECK_MS);
+    setInterval(updateRequestNotificationsPanel, 60 * 1000);
+  }
+
   function isSettingsUnlocked() {
     return Number(settings.settingsUnlockedUntil || 0) > Date.now();
   }
@@ -585,6 +1447,332 @@
   function closeFloatingPanels(except) {
     for (const id of ['requestPanel', 'settingsGate', 'settingsPanel']) {
       if (id !== except) closePanel(id);
+    }
+  }
+
+  function isVisibleElement(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 8 && rect.height > 8 && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+  }
+
+  function elementText(el) {
+    return cleanText([
+      el?.innerText || el?.textContent || '',
+      el?.getAttribute?.('title') || '',
+      el?.getAttribute?.('aria-label') || ''
+    ].join(' '));
+  }
+
+  function findRwphLauncher() {
+    const selectors = [
+      '[id*="RWPH" i]',
+      '[class*="RWPH" i]',
+      '[id*="ranked-war-payout" i]',
+      '[class*="ranked-war-payout" i]',
+      'button',
+      'a',
+      '[role="button"]',
+      'div'
+    ];
+
+    const nodes = Array.from(document.querySelectorAll(selectors.join(',')));
+    const launcher = document.getElementById(`${APP}-launcher`);
+
+    const scored = nodes
+      .filter(el => el !== launcher && !el.closest?.(`.${APP}-panel`) && isVisibleElement(el))
+      .map(el => {
+        const txt = elementText(el).toLowerCase();
+        const blob = `${el.id || ''} ${el.className || ''} ${txt}`.toLowerCase();
+        let score = 0;
+
+        if (blob.includes('rwph')) score += 80;
+        if (blob.includes('ranked war payout helper')) score += 80;
+        if (blob.includes('ranked war')) score += 30;
+        if (blob.includes('payout helper')) score += 30;
+        if (blob.includes('payment helper')) score += 10;
+        if (blob.includes('vault request')) score -= 100;
+        if (blob.includes(APP.toLowerCase())) score -= 100;
+
+        const rect = el.getBoundingClientRect();
+        if (rect.top < 120) score += 12;
+        if (rect.left > 0 && rect.right < window.innerWidth) score += 5;
+
+        return { el, score };
+      })
+      .filter(x => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    return scored[0]?.el || null;
+  }
+
+  function findFactionWarfareButton() {
+    const nodes = Array.from(document.querySelectorAll('button,a,[role="button"],div,span'));
+    const scored = nodes
+      .filter(el => !el.closest?.(`.${APP}-panel`) && isVisibleElement(el))
+      .map(el => {
+        const txt = elementText(el).toLowerCase();
+        let score = 0;
+
+        if (txt.includes('faction warfare')) score += 80;
+        if (txt.includes('warfare')) score += 20;
+
+        const rect = el.getBoundingClientRect();
+        if (rect.top < 140) score += 8;
+
+        return { el, score };
+      })
+      .filter(x => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    return scored[0]?.el || null;
+  }
+
+  function placeLauncher(forceFallback = false) {
+    const btn = document.getElementById(`${APP}-launcher`);
+    if (!btn) return;
+
+    const rwph = !forceFallback ? findRwphLauncher() : null;
+    const warfare = !forceFallback ? findFactionWarfareButton() : null;
+
+    try {
+      btn.classList.remove(`${APP}-floatingLauncher`);
+      btn.classList.add(`${APP}-inlineLauncher`);
+      btn.style.position = '';
+      btn.style.right = '';
+      btn.style.bottom = '';
+      btn.style.left = '';
+      btn.style.top = '';
+      btn.title = 'Vault Request';
+
+      // Best case: RWPH exists, so sit directly beside it.
+      if (rwph && rwph.parentElement) {
+        if (rwph.nextElementSibling !== btn) {
+          rwph.insertAdjacentElement('afterend', btn);
+        }
+        return;
+      }
+
+      // RWPH missing: use the same intended RWPH slot.
+      // RWPH's slot is in the faction header/top button row, beside Faction Warfare.
+      // Put this button BEFORE Faction Warfare so it occupies that RWPH-style position
+      // instead of dropping to the floating fallback.
+      if (warfare && warfare.parentElement) {
+        if (warfare.previousElementSibling !== btn) {
+          warfare.insertAdjacentElement('beforebegin', btn);
+        }
+        return;
+      }
+
+      // Last header-style fallback: try to locate the Torn faction/header control row
+      // and append there. This keeps the launcher in the top Torn header area.
+      const headerLike = Array.from(document.querySelectorAll(
+        '[class*="faction" i], [class*="header" i], [class*="top" i], [class*="menu" i], [class*="content-title" i], [class*="tabs" i]'
+      ))
+        .filter(el => isVisibleElement(el) && el.getBoundingClientRect().top < 170)
+        .sort((a, b) => {
+          const ar = a.getBoundingClientRect();
+          const br = b.getBoundingClientRect();
+          return (br.width * br.height) - (ar.width * ar.height);
+        })[0];
+
+      if (headerLike) {
+        headerLike.appendChild(btn);
+        return;
+      }
+    } catch (err) {
+      console.warn('[Vault Request] Could not place launcher in RWPH slot:', err);
+    }
+
+    // Only use floating as an emergency fallback when Torn's header slot cannot be found.
+    btn.classList.remove(`${APP}-inlineLauncher`);
+    btn.classList.add(`${APP}-floatingLauncher`);
+
+    if (btn.parentElement !== document.body) {
+      document.body.appendChild(btn);
+    }
+  }
+
+  function startLauncherWatcher() {
+    let attempts = 0;
+
+    const tryPlace = () => {
+      attempts += 1;
+      placeLauncher(false);
+
+      if (attempts < 30) {
+        setTimeout(tryPlace, 1000);
+      }
+    };
+
+    tryPlace();
+
+    const observer = new MutationObserver(() => {
+      const btn = document.getElementById(`${APP}-launcher`);
+      if (!btn) return;
+
+      clearTimeout(observer._timer);
+      observer._timer = setTimeout(() => placeLauncher(false), 350);
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function getPanelStateKey(panel) {
+    return String(panel?.id || '').replace(`${APP}-`, '') || 'panel';
+  }
+
+  function ensurePanelPositions() {
+    if (!settings.panelPositions || typeof settings.panelPositions !== 'object') {
+      settings.panelPositions = {};
+    }
+    return settings.panelPositions;
+  }
+
+  function applySavedPanelState(panel, key) {
+    const saved = ensurePanelPositions()[key];
+    if (!saved) return;
+
+    if (Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+      panel.style.left = `${Math.max(0, saved.left)}px`;
+      panel.style.top = `${Math.max(0, saved.top)}px`;
+      panel.style.right = 'auto';
+      panel.style.bottom = 'auto';
+    }
+
+    if (Number.isFinite(saved.width)) {
+      panel.style.width = `${Math.max(300, saved.width)}px`;
+    }
+
+    if (Number.isFinite(saved.height)) {
+      panel.style.height = `${Math.max(220, saved.height)}px`;
+      panel.style.maxHeight = 'none';
+    }
+  }
+
+  function savePanelState(panel, key) {
+    if (!panel) return;
+
+    const rect = panel.getBoundingClientRect();
+    const positions = ensurePanelPositions();
+
+    positions[key] = {
+      left: Math.round(rect.left),
+      top: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    };
+
+    saveSettings();
+  }
+
+  function clampPanelToScreen(panel) {
+    const rect = panel.getBoundingClientRect();
+    const pad = 8;
+    let left = rect.left;
+    let top = rect.top;
+
+    if (rect.right < pad) left = pad;
+    if (rect.bottom < pad) top = pad;
+    if (rect.left > window.innerWidth - pad) left = window.innerWidth - Math.min(rect.width, window.innerWidth - pad);
+    if (rect.top > window.innerHeight - pad) top = window.innerHeight - Math.min(rect.height, window.innerHeight - pad);
+
+    left = Math.max(pad, Math.min(left, Math.max(pad, window.innerWidth - Math.min(rect.width, window.innerWidth - pad))));
+    top = Math.max(pad, Math.min(top, Math.max(pad, window.innerHeight - Math.min(rect.height, window.innerHeight - pad))));
+
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+  }
+
+  function makePanelMoveResize(panel) {
+    if (!panel || panel.dataset.tvresInteractive === '1') return;
+
+    panel.dataset.tvresInteractive = '1';
+
+    const key = getPanelStateKey(panel);
+    applySavedPanelState(panel, key);
+    setTimeout(() => clampPanelToScreen(panel), 0);
+
+    const header = panel.querySelector(`.${APP}-header`);
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+
+    const onMove = (ev) => {
+      if (!dragging) return;
+
+      ev.preventDefault();
+
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      const rect = panel.getBoundingClientRect();
+      const pad = 8;
+
+      let left = startLeft + dx;
+      let top = startTop + dy;
+
+      left = Math.max(pad, Math.min(left, window.innerWidth - Math.min(rect.width, window.innerWidth - pad)));
+      top = Math.max(pad, Math.min(top, window.innerHeight - Math.min(rect.height, window.innerHeight - pad)));
+
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      panel.style.right = 'auto';
+      panel.style.bottom = 'auto';
+    };
+
+    const onUp = () => {
+      if (!dragging) return;
+
+      dragging = false;
+      panel.classList.remove(`${APP}-dragging`);
+      document.removeEventListener('mousemove', onMove, true);
+      document.removeEventListener('mouseup', onUp, true);
+      savePanelState(panel, key);
+    };
+
+    if (header) {
+      header.addEventListener('mousedown', (ev) => {
+        if (ev.button !== 0) return;
+        if (ev.target.closest('button,input,textarea,select,a')) return;
+
+        const rect = panel.getBoundingClientRect();
+        dragging = true;
+        startX = ev.clientX;
+        startY = ev.clientY;
+        startLeft = rect.left;
+        startTop = rect.top;
+
+        panel.classList.add(`${APP}-dragging`);
+        panel.style.left = `${rect.left}px`;
+        panel.style.top = `${rect.top}px`;
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+
+        document.addEventListener('mousemove', onMove, true);
+        document.addEventListener('mouseup', onUp, true);
+        ev.preventDefault();
+      });
+    }
+
+    let resizeSaveTimer = null;
+    const resizeObserver = new ResizeObserver(() => {
+      clearTimeout(resizeSaveTimer);
+      resizeSaveTimer = setTimeout(() => {
+        clampPanelToScreen(panel);
+        savePanelState(panel, key);
+      }, 250);
+    });
+
+    resizeObserver.observe(panel);
+
+    const closeBtn = panel.querySelector(`.${APP}-x`);
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => savePanelState(panel, key), { once: true });
     }
   }
 
@@ -622,18 +1810,34 @@
       }
 
       #${APP}-launcher {
-        position: fixed;
-        right: 15px;
-        bottom: 18px;
         z-index: 999999;
         border: 1px solid var(--${APP}-line);
         border-radius: 14px;
         background: linear-gradient(180deg, #36210c, #130d07);
         color: #ffe1ad;
-        padding: 10px 15px;
+        padding: 9px 13px;
         cursor: pointer;
         font: 900 13px Arial, sans-serif;
-        box-shadow: 0 8px 28px rgba(0,0,0,.55);
+        box-shadow: 0 8px 28px rgba(0,0,0,.42);
+        white-space: nowrap;
+        line-height: 1.1;
+      }
+
+      #${APP}-launcher.${APP}-floatingLauncher {
+        position: fixed;
+        right: 15px;
+        bottom: 18px;
+      }
+
+      #${APP}-launcher.${APP}-inlineLauncher {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 32px;
+        margin-left: 8px;
+        margin-right: 4px;
+        vertical-align: middle;
       }
 
       .${APP}-panel {
@@ -641,8 +1845,8 @@
         right: 15px;
         bottom: 68px;
         z-index: 1000000;
-        width: min(460px, calc(100vw - 30px));
-        max-height: min(740px, calc(100vh - 92px));
+        width: min(470px, calc(100vw - 30px));
+        max-height: min(760px, calc(100vh - 92px));
         overflow: auto;
         border: 1px solid var(--${APP}-line);
         border-radius: 18px;
@@ -654,11 +1858,17 @@
         box-shadow: 0 18px 48px rgba(0,0,0,.68);
         font: 13px Arial, sans-serif;
         box-sizing: border-box;
+        resize: both;
+        min-width: 320px;
+        min-height: 260px;
       }
 
-      .${APP}-panel * {
-        box-sizing: border-box;
+      .${APP}-panel.${APP}-dragging {
+        user-select: none;
+        cursor: grabbing;
       }
+
+      .${APP}-panel * { box-sizing: border-box; }
 
       .${APP}-header {
         border: 1px solid rgba(255,179,71,.55);
@@ -666,6 +1876,7 @@
         background: rgba(0,0,0,.22);
         padding: 12px;
         margin-bottom: 12px;
+        cursor: move;
       }
 
       .${APP}-headRow {
@@ -757,6 +1968,12 @@
         font: 700 14px Arial, sans-serif;
       }
 
+      .${APP}-panel input[type="color"] {
+        height: 44px;
+        padding: 5px;
+        cursor: pointer;
+      }
+
       .${APP}-panel textarea {
         min-height: 82px;
         resize: vertical;
@@ -775,6 +1992,7 @@
         border-radius: 11px;
         padding: 8px 10px;
         font-weight: 900;
+        line-height: 1.35;
       }
 
       .${APP}-preview.ok {
@@ -808,9 +2026,7 @@
       }
 
       .${APP}-btn:hover,
-      #${APP}-make:hover {
-        filter: brightness(1.12);
-      }
+      #${APP}-make:hover { filter: brightness(1.12); }
 
       .${APP}-btn.danger {
         border-color: #e25353;
@@ -822,6 +2038,11 @@
         border-color: var(--${APP}-good);
         color: #d9ffe1;
         background: linear-gradient(180deg, #1d4c2a, #0b1d10);
+      }
+
+      .${APP}-btn:disabled {
+        opacity: .55;
+        cursor: wait;
       }
 
       #${APP}-make {
@@ -852,10 +2073,36 @@
         color: #bfa579;
       }
 
-      .${APP}-controlsPreview,
+      .${APP}-notice {
+        border: 1px solid rgba(255,179,71,.28);
+        border-radius: 11px;
+        background: rgba(0,0,0,.18);
+        padding: 8px 10px;
+        margin-top: 7px;
+        line-height: 1.35;
+      }
+
+      .${APP}-notice.unread {
+        border-color: rgba(255,179,71,.65);
+        background: rgba(255,179,71,.08);
+      }
+
+      .${APP}-notice.sent {
+        border-color: rgba(76,175,100,.55);
+      }
+
+      .${APP}-notice.expired {
+        border-color: rgba(226,83,83,.65);
+      }
+
+      .${APP}-notice.pending {
+        border-color: rgba(88,101,242,.55);
+      }
+
       .${APP}-embedPreview {
         margin-top: 8px;
         border: 1px solid rgba(255,179,71,.35);
+        border-left: 5px solid var(--${APP}-line);
         border-radius: 12px;
         background: rgba(255,179,71,.08);
         color: #ffe4b3;
@@ -863,10 +2110,6 @@
         word-break: break-word;
         font-size: 12px;
         line-height: 1.35;
-      }
-
-      .${APP}-embedPreview {
-        border-left: 5px solid var(--${APP}-line);
       }
 
       .${APP}-pillRow {
@@ -896,7 +2139,7 @@
         right: 15px;
         bottom: 120px;
         z-index: 1000002;
-        width: min(460px, calc(100vw - 30px));
+        width: min(470px, calc(100vw - 30px));
         border-radius: 13px;
         background: #100a05;
         color: white;
@@ -910,9 +2153,12 @@
       #${APP}-toast.bad { border: 1px solid var(--${APP}-danger); }
 
       @media (max-width: 520px) {
-        #${APP}-launcher {
+        #${APP}-launcher.${APP}-floatingLauncher {
           right: 10px;
           bottom: 12px;
+        }
+
+        #${APP}-launcher {
           padding: 9px 11px;
         }
         .${APP}-panel {
@@ -921,15 +2167,14 @@
           width: calc(100vw - 20px);
           padding: 12px;
         }
-        .${APP}-title {
-          font-size: 15px;
-        }
+        .${APP}-title { font-size: 15px; }
       }
     `;
     document.head.appendChild(style);
   }
 
   function panelHeader(title, subtitle, icon, closeId) {
+    const panelHint = subtitle ? `${subtitle} Drag this top bar to move. Resize from the bottom-right corner.` : 'Drag this top bar to move. Resize from the bottom-right corner.';
     return `
       <div class="${APP}-header">
         <div class="${APP}-headRow">
@@ -937,7 +2182,7 @@
             <div class="${APP}-logo">${icon || '💰'}</div>
             <div>
               <div class="${APP}-title">${title}</div>
-              <div class="${APP}-subtitle">${subtitle || ''}</div>
+              <div class="${APP}-subtitle">${panelHint}</div>
             </div>
           </div>
           <button type="button" class="${APP}-x" id="${APP}-${closeId}">×</button>
@@ -960,22 +2205,8 @@
       preview.textContent = parsed.error;
       preview.className = `${APP}-preview warn`;
     }
-  }
 
-  function updateControlsPreview() {
-    const el = $('controlsPreview');
-    if (!el) return;
-
-    const user = parseUserDisplay($('user')?.value || '');
-    const amount = parseAmount($('amount')?.value || '');
-
-    if (user.id && amount.ok) {
-      el.textContent = `Discord button will open Torn Controls prefilled with user ID ${user.id} and ${amount.formatted}. Banker still manually clicks Give Money and Confirm.`;
-    } else if (!user.id) {
-      el.textContent = 'Enter name and Torn ID like Evil_panda_420 [3236276] so the banker button can prefill the right player.';
-    } else {
-      el.textContent = 'Enter a valid amount so the banker button can prefill the money field.';
-    }
+    updateBalanceDisplay();
   }
 
   function applyFormattedAmountToInput() {
@@ -990,18 +2221,25 @@
     }
 
     updateAmountPreview();
-    updateControlsPreview();
   }
 
   function fillRequestPanelValues() {
     $('user').value = getCurrentUserDisplay();
+    if ($('discordUserId')) $('discordUserId').value = settings.discordUserId || '';
     $('amount').value = settings.amountInput || '';
     updateAmountPreview();
-    updateControlsPreview();
+    updateRequestNotificationsPanel();
+    updateBalanceDisplay();
+
+    const user = parseUserDisplay($('user')?.value || '');
+    if (user.id && settings.apiKey) {
+      refreshBalanceForCurrentUser(false);
+    }
   }
 
   function saveRequestFromPanel() {
     settings.userDisplay = cleanText($('user')?.value || '');
+    settings.discordUserId = normalizeDiscordUserId($('discordUserId')?.value || settings.discordUserId || '');
     settings.amountInput = cleanText($('amount')?.value || '');
     saveSettings();
   }
@@ -1024,6 +2262,11 @@
       return;
     }
 
+    if (!settings.apiKey) {
+      showToast('Request blocked. A faction API key must be saved in Settings so vault balance can be checked.', 'warn');
+      return;
+    }
+
     if (!webhookLooksValid(settings.webhookUrl)) {
       showToast('The faction webhook has not been set in Settings yet.', 'warn');
       return;
@@ -1033,22 +2276,62 @@
     const btn = $('make');
     if (btn) {
       btn.disabled = true;
-      btn.textContent = 'Sending...';
+      btn.textContent = 'Checking balance...';
     }
 
     try {
-      const payload = buildPayload(user, amount);
-      await postWebhook(payload);
-      showToast(`Request sent to Discord: ${amount.formatted}`, 'ok');
+      const balance = await verifyRequestAgainstVaultBalance(user, amount);
+      updateBalanceDisplay();
+
+      if (btn) btn.textContent = 'Sending...';
+
+      const requestId = makeRequestId(user.id, amount.raw);
+      const expiresAt = Date.now() + REQUEST_TIMEOUT_MS;
+      const discordUserId = normalizeDiscordUserId(settings.discordUserId);
+      const requestRecordBase = {
+        id: requestId,
+        user,
+        amount,
+        balance,
+        discordUserId,
+        createdAt: Date.now(),
+        expiresAt,
+        status: 'pending',
+        expiryNotified: false
+      };
+
+      const payload = buildPayload(user, amount, balance, requestRecordBase);
+      const res = await postWebhook(payload, { wait: true });
+
+      let discordMessageId = '';
+      try {
+        const body = JSON.parse(res.responseText || '{}');
+        discordMessageId = body.id || '';
+      } catch {}
+
+      storePendingRequest({
+        ...requestRecordBase,
+        discordMessageId
+      });
+
+      addRequestNotification(
+        'sent',
+        `Your ${amount.formatted} vault request was sent to the faction Discord channel. It expires in 5 hours.`,
+        requestId
+      );
+
+      showToast(`Request sent to Discord: ${amount.formatted}. It expires in 5 hours.`, 'ok');
 
       $('amount').value = amount.formatted;
       settings.amountInput = amount.formatted;
       saveSettings();
       updateAmountPreview();
-      updateControlsPreview();
+      updateBalanceDisplay();
+      updateRequestNotificationsPanel();
     } catch (err) {
       console.error('[Torn Vault Request Maker]', err);
       showToast(err.message || 'Request failed.', 'bad');
+      updateBalanceDisplay();
     } finally {
       setTimeout(() => {
         submitLocked = false;
@@ -1059,6 +2342,167 @@
         }
       }, 1200);
     }
+  }
+
+
+  function findPendingRequestForControls() {
+    ensureRequestStores();
+
+    const params = getCurrentPageRequestParams();
+
+    if (params.requestId) {
+      const byId = settings.pendingRequests.find(req => req.id === params.requestId);
+      if (byId) return byId;
+    }
+
+    if (params.userId && params.amountRaw) {
+      const local = settings.pendingRequests.find(req =>
+        req.status === 'pending' &&
+        String(req.user?.id || '') === String(params.userId) &&
+        String(req.amount?.raw || '') === String(params.amountRaw)
+      );
+      if (local) return local;
+    }
+
+    const userDisplay = params.userDisplay || (params.userName && params.userId ? `${params.userName} [${params.userId}]` : (params.userId ? `User [${params.userId}]` : 'Unknown User'));
+    const parsedUser = parseTornUserDisplay(userDisplay);
+    if (!parsedUser.id && params.userId) parsedUser.id = params.userId;
+    if (!parsedUser.name && params.userName) parsedUser.name = params.userName;
+
+    return {
+      id: params.requestId || makeRequestId(params.userId, params.amountRaw),
+      user: parsedUser,
+      amount: {
+        raw: params.amountRaw || '0',
+        amount: Number(params.amountRaw || 0),
+        formatted: params.amountFormatted || formatMoney(params.amountRaw || 0)
+      },
+      balance: { formatted: params.balanceFormatted || 'Not checked' },
+      createdAt: params.createdAt || Date.now(),
+      expiresAt: params.expiresAt || (Date.now() + REQUEST_TIMEOUT_MS),
+      status: 'pending',
+      discordMessageId: ''
+    };
+  }
+
+  function getCurrentBankerDisplay() {
+    const found = findSelfFromWindow() || findSelfFromScripts() || findSelfFromDom();
+    if (found?.name && found?.id) {
+      return `${found.name} [${found.id}]`;
+    }
+    return '';
+  }
+
+  async function markCurrentRequestFulfilled(record, banker) {
+    const completedRecord = {
+      ...record,
+      completedAt: Date.now(),
+      status: 'fulfilled'
+    };
+
+    if (!webhookLooksValid(settings.userNotifyWebhookUrl)) {
+      throw new Error('Add the User Notice Webhook URL in Settings before marking requests fulfilled.');
+    }
+
+    await postWebhook(buildUserFulfilledPayload(completedRecord, banker), { kind: 'notify', wait: false });
+
+    if (record.discordMessageId && webhookLooksValid(settings.webhookUrl)) {
+      try {
+        await editWebhookMessage(record.discordMessageId, buildMainFulfilledPayload(completedRecord, banker));
+      } catch (err) {
+        console.warn('[Vault Request] Could not edit main request message after fulfilment:', err);
+      }
+    }
+
+    updatePendingRequest(record.id, {
+      status: 'fulfilled',
+      completedAt: completedRecord.completedAt,
+      banker
+    });
+
+    addRequestNotification(
+      'sent',
+      `${record.amount?.formatted || ''} vault request was marked fulfilled by ${formatTornMention(banker)}.`,
+      record.id
+    );
+
+    return completedRecord;
+  }
+
+  function openFulfilledPanelIfNeeded() {
+    if (!/factions\.php/i.test(location.pathname || '')) return;
+
+    const params = getCurrentPageRequestParams();
+    if (!params.userId || !params.amountRaw) return;
+    if (!String(location.hash || location.href).includes('giveMoneyTo=')) return;
+    if (document.getElementById(`${APP}-fulfillPanel`)) return;
+
+    const record = findPendingRequestForControls();
+    const userDisplay = record?.user?.display || params.userDisplay || `User [${params.userId}]`;
+    const amountDisplay = record?.amount?.formatted || params.amountFormatted || formatMoney(params.amountRaw);
+
+    const panel = document.createElement('div');
+    panel.id = `${APP}-fulfillPanel`;
+    panel.className = `${APP}-panel`;
+    panel.innerHTML = `
+      ${panelHeader('Vault Request Completion', 'After manually paying in Torn, mark the request fulfilled.', '✅', 'closeFulfill')}
+
+      <div class="${APP}-card">
+        <div class="${APP}-cardTitle">Request From Discord</div>
+        <p class="${APP}-note"><b>User:</b> ${escapeHtml(userDisplay)}</p>
+        <p class="${APP}-note"><b>Amount:</b> ${escapeHtml(amountDisplay)}</p>
+
+        <label for="${APP}-bankerName">Banker name and Torn ID</label>
+        <input id="${APP}-bankerName" type="text" placeholder="Banker_Name [123456]" value="${escapeHtml(getCurrentBankerDisplay())}" autocomplete="off" />
+
+        <p class="${APP}-note">
+          First manually complete the payment in Torn. Then click <b>Mark Request Fulfilled</b>.
+          This sends the user notice webhook message with the banker name and completion timestamp.
+        </p>
+
+        <div class="${APP}-row">
+          <button type="button" class="${APP}-btn good" id="${APP}-markFulfilled">Mark Request Fulfilled</button>
+          <button type="button" class="${APP}-btn" id="${APP}-refreshBanker">Refill Banker Name</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(panel);
+    makePanelMoveResize(panel);
+
+    $('closeFulfill').addEventListener('click', () => panel.remove());
+
+    $('refreshBanker').addEventListener('click', () => {
+      $('bankerName').value = getCurrentBankerDisplay();
+    });
+
+    $('markFulfilled').addEventListener('click', async () => {
+      const banker = parseBankerDisplay($('bankerName')?.value || getCurrentBankerDisplay());
+
+      if (!banker.display || !banker.name) {
+        showToast('Enter banker name and Torn ID first.', 'warn');
+        return;
+      }
+
+      const btn = $('markFulfilled');
+      btn.disabled = true;
+      btn.textContent = 'Sending notice...';
+
+      try {
+        await markCurrentRequestFulfilled(record, banker);
+        showToast('Fulfilled notice sent to the user notice webhook.', 'ok');
+        panel.remove();
+      } catch (err) {
+        console.error('[Vault Request] Mark fulfilled failed:', err);
+        showToast(err.message || 'Could not send fulfilled notice.', 'bad');
+      } finally {
+        const liveBtn = $('markFulfilled');
+        if (liveBtn) {
+          liveBtn.disabled = false;
+          liveBtn.textContent = 'Mark Request Fulfilled';
+        }
+      }
+    });
   }
 
   async function tryOpenSettings() {
@@ -1105,10 +2549,19 @@
         <label for="${APP}-user">Name and Torn ID</label>
         <input id="${APP}-user" type="text" placeholder="Evil_panda_420 [3236276]" autocomplete="off" />
 
+        <label for="${APP}-discordUserId">Discord user ID for channel ping, optional</label>
+        <input id="${APP}-discordUserId" type="text" placeholder="Example: 123456789012345678" autocomplete="off" />
+
         <label for="${APP}-amount">Request amount</label>
         <input id="${APP}-amount" type="text" inputmode="decimal" placeholder="1000000, 1m, 1b, or 1t" autocomplete="off" />
         <div id="${APP}-amountPreview" class="${APP}-preview warn">Enter a request amount.</div>
-        <div id="${APP}-controlsPreview" class="${APP}-controlsPreview">Enter details to preview the banker button action.</div>
+
+        <label>Faction vault balance</label>
+        <div id="${APP}-balanceStatus" class="${APP}-preview warn">Vault balance: not checked yet.</div>
+
+        <div class="${APP}-row">
+          <button type="button" class="${APP}-btn" id="${APP}-refreshBalance">Check Vault Balance</button>
+        </div>
 
         <button type="button" id="${APP}-make">Make Request</button>
       </div>
@@ -1118,21 +2571,51 @@
         <button type="button" class="${APP}-btn" id="${APP}-refreshUser">Refill Name/ID</button>
       </div>
 
-      <p class="${APP}-note">
-        The Discord embed includes an <b>Open Faction Controls</b> button.
-        Banker still manually checks the details, clicks <b>Give Money</b>, then <b>Confirm</b>.
-      </p>
+      <div class="${APP}-card">
+        <div class="${APP}-cardTitle">Request Status</div>
+        <div id="${APP}-requestNotifications"></div>
+        <div class="${APP}-row">
+          <button type="button" class="${APP}-btn" id="${APP}-markNoticesRead">Mark Notifications Read</button>
+        </div>
+        <div class="${APP}-cardTitle" style="margin-top:12px;">Pending Requests</div>
+        <div id="${APP}-pendingRequests"></div>
+      </div>
+
+      <div class="${APP}-card">
+        <div class="${APP}-cardTitle">How To Make A Request</div>
+        <p class="${APP}-note">
+          1. Check the <b>Name and Torn ID</b> box is correct. It should look like <b>Evil_panda_420 [3236276]</b>.
+        </p>
+        <p class="${APP}-note">
+          2. Type the amount you want from your faction vault balance. You can use <b>1000000</b>, <b>1m</b>, <b>1b</b>, or <b>1t</b>.
+        </p>
+        <p class="${APP}-note">
+          3. Click <b>Check Vault Balance</b> if you want to see your available balance first. The script also checks again when you click <b>Make Request</b>.
+        </p>
+        <p class="${APP}-note">
+          4. Click <b>Make Request</b>. If the amount is inside your available vault balance, it sends the request to the faction Discord channel.
+        </p>
+        <p class="${APP}-note">
+          5. The request stays pending for <b>5 hours</b>. If it times out, this panel will show a notification and you need to make another request.
+        </p>
+        <p class="${APP}-note">
+          6. A banker/leader reviews the Discord embed and manually pays it from Torn faction controls.
+        </p>
+        <p class="${APP}-note">
+          7. After paying, the banker can click <b>Mark Request Fulfilled</b> to send the fulfilled notice to the user notice webhook.
+        </p>
+        <p class="${APP}-note">
+          Discord webhooks cannot send private DMs by themselves. If you add your Discord user ID, the script can ping you in the request channel instead.
+        </p>
+      </div>
 
       <p class="${APP}-note">
-        Amount examples:
-        <b>1000000</b> = $1,000,000,
-        <b>1m</b> = $1,000,000,
-        <b>1b</b> = $1,000,000,000,
-        <b>1t</b> = $1,000,000,000,000.
+        The script checks your faction vault balance before sending. If the amount is higher than your available balance, the request is blocked.
       </p>
     `;
 
     document.body.appendChild(panel);
+    makePanelMoveResize(panel);
     fillRequestPanelValues();
 
     $('closeRequest').addEventListener('click', () => panel.remove());
@@ -1140,32 +2623,48 @@
     $('amount').addEventListener('input', () => {
       settings.amountInput = $('amount').value;
       updateAmountPreview();
-      updateControlsPreview();
+      updateBalanceDisplay();
+    });
+
+    $('discordUserId').addEventListener('input', () => {
+      settings.discordUserId = normalizeDiscordUserId($('discordUserId').value);
+      saveSettings();
     });
 
     $('amount').addEventListener('blur', applyFormattedAmountToInput);
 
     $('user').addEventListener('input', () => {
       settings.userDisplay = cleanText($('user').value);
-      updateControlsPreview();
+      updateBalanceDisplay();
+      debounceBalanceCheck();
     });
 
     $('user').addEventListener('change', () => {
       settings.userDisplay = cleanText($('user').value);
+      settings.lastBalanceUserId = '';
+      settings.lastBalanceAmount = null;
+      settings.lastBalanceCheckedAt = 0;
       saveSettings();
-      updateControlsPreview();
+      updateBalanceDisplay();
+      debounceBalanceCheck();
     });
 
     $('make').addEventListener('click', makeRequest);
     $('settingsBtn').addEventListener('click', tryOpenSettings);
+    $('refreshBalance').addEventListener('click', () => refreshBalanceForCurrentUser(true));
+    $('markNoticesRead').addEventListener('click', markRequestNotificationsRead);
 
     $('refreshUser').addEventListener('click', () => {
       settings.userDisplay = '';
+      settings.lastBalanceUserId = '';
+      settings.lastBalanceAmount = null;
+      settings.lastBalanceCheckedAt = 0;
       saveSettings();
       $('user').value = getCurrentUserDisplay();
       settings.userDisplay = cleanText($('user').value);
       saveSettings();
-      updateControlsPreview();
+      updateBalanceDisplay();
+      debounceBalanceCheck();
       showToast(settings.userDisplay ? 'Name/ID refilled.' : 'Could not detect name/ID. Type it manually.', settings.userDisplay ? 'ok' : 'warn');
     });
   }
@@ -1186,7 +2685,7 @@
         <input id="${APP}-apiKeyGate" type="password" placeholder="Paste your Torn API key with faction access" autocomplete="off" value="${settings.apiKey ? '********' : ''}" />
 
         <p class="${APP}-note">
-          The settings panel controls the faction Discord webhook and embed message.
+          Settings control the faction Discord webhook, embed message, and balance checks.
           It only opens after this script confirms the key can read faction API data.
         </p>
 
@@ -1200,18 +2699,22 @@
         <div class="${APP}-cardTitle">API Safety</div>
         <p class="${APP}-note">
           Your API key is saved only in this browser's local storage.
-          Do not share a copy of this script with your personal API key saved in it.
+          It is used to check faction access and read faction vault balance data before sending a request.
         </p>
       </div>
     `;
 
     document.body.appendChild(panel);
+    makePanelMoveResize(panel);
 
     $('closeGate').addEventListener('click', () => panel.remove());
 
     $('clearApi').addEventListener('click', () => {
       settings.apiKey = '';
       settings.settingsUnlockedUntil = 0;
+      settings.lastBalanceUserId = '';
+      settings.lastBalanceAmount = null;
+      settings.lastBalanceCheckedAt = 0;
       saveSettings();
       $('apiKeyGate').value = '';
       showToast('Saved API key cleared.', 'ok');
@@ -1264,7 +2767,7 @@
     if ($('embedTitle')) $('embedTitle').value = settings.embedTitle;
     if ($('embedDescription')) $('embedDescription').value = settings.embedDescription;
     if ($('embedFooter')) $('embedFooter').value = settings.embedFooter;
-    if ($('embedColor')) $('embedColor').value = settings.embedColor;
+    if ($('embedColorPicker')) $('embedColorPicker').value = `#${cleanHex(settings.embedColor)}`;
 
     updatePresetPills();
     updateEmbedPreview();
@@ -1281,12 +2784,20 @@
 
   function saveSettingsFromSettingsPanel() {
     settings.webhookUrl = cleanText($('webhookUrl')?.value || '');
+    settings.userNotifyWebhookUrl = cleanText($('userNotifyWebhookUrl')?.value || '');
+    settings.timeoutNotifyTitle = cleanText($('timeoutNotifyTitle')?.value || '');
+    settings.timeoutNotifyMessage = String($('timeoutNotifyMessage')?.value || '').trim();
+    settings.timeoutNotifyFooter = cleanText($('timeoutNotifyFooter')?.value || '');
+    settings.timeoutNotifyColor = cleanNoticeColor($('timeoutNotifyColor')?.value || settings.timeoutNotifyColor, 'ed4245');
+    settings.fulfilledNotifyTitle = cleanText($('fulfilledNotifyTitle')?.value || '');
+    settings.fulfilledNotifyMessage = String($('fulfilledNotifyMessage')?.value || '').trim();
+    settings.fulfilledNotifyFooter = cleanText($('fulfilledNotifyFooter')?.value || '');
+    settings.fulfilledNotifyColor = cleanNoticeColor($('fulfilledNotifyColor')?.value || settings.fulfilledNotifyColor, '3ba55d');
     settings.embedTitle = cleanText($('embedTitle')?.value || '');
     settings.embedDescription = String($('embedDescription')?.value || '').trim();
     settings.embedFooter = cleanText($('embedFooter')?.value || '');
-    settings.embedColor = cleanText($('embedColor')?.value || '').replace('#', '');
+    settings.embedColor = cleanHex($('embedColorPicker')?.value || settings.embedColor);
 
-    // If user manually edits, keep preset label but mark as custom.
     const matching = Object.entries(PRESETS).find(([_, p]) =>
       p.title === settings.embedTitle &&
       p.description === settings.embedDescription &&
@@ -1299,32 +2810,74 @@
     updatePresetPills();
   }
 
+  function updateNoticePreview() {
+    const preview = $('noticePreview');
+    if (!preview) return;
+
+    const user = parseTornUserDisplay($('previewUser')?.value || 'Evil_panda_420 [3236276]');
+    const banker = parseBankerDisplay('Banker_Name [123456]');
+    const amount = parseAmount($('previewAmount')?.value || '1m');
+    const record = {
+      user,
+      banker,
+      amount: amount.ok ? amount : parseAmount('1m'),
+      balance: { amount: 2500000, formatted: '$2,500,000' },
+      createdAt: Date.now(),
+      expiresAt: Date.now() + REQUEST_TIMEOUT_MS,
+      completedAt: Date.now()
+    };
+
+    const timeoutTitle = noticeTemplateValue($('timeoutNotifyTitle')?.value || settings.timeoutNotifyTitle, record);
+    const timeoutMessage = noticeTemplateValue($('timeoutNotifyMessage')?.value || settings.timeoutNotifyMessage, record);
+    const timeoutFooter = noticeTemplateValue($('timeoutNotifyFooter')?.value || settings.timeoutNotifyFooter, record);
+
+    const fulfilledTitle = noticeTemplateValue($('fulfilledNotifyTitle')?.value || settings.fulfilledNotifyTitle, record, banker);
+    const fulfilledMessage = noticeTemplateValue($('fulfilledNotifyMessage')?.value || settings.fulfilledNotifyMessage, record, banker);
+    const fulfilledFooter = noticeTemplateValue($('fulfilledNotifyFooter')?.value || settings.fulfilledNotifyFooter, record, banker);
+
+    preview.style.borderLeftColor = `#${cleanNoticeColor($('fulfilledNotifyColor')?.value || settings.fulfilledNotifyColor, '3ba55d')}`;
+    preview.innerHTML = `
+      <div style="font-weight:900;margin-bottom:7px;">User notice preview</div>
+      <div style="border-left:4px solid #${cleanNoticeColor($('timeoutNotifyColor')?.value || settings.timeoutNotifyColor, 'ed4245')};padding-left:8px;margin-bottom:10px;">
+        <div style="font-weight:900;">${escapeHtml(timeoutTitle)}</div>
+        <div style="white-space:pre-wrap;">${escapeHtml(timeoutMessage)}</div>
+        <div class="${APP}-tiny">Footer: ${escapeHtml(timeoutFooter)}</div>
+      </div>
+      <div style="border-left:4px solid #${cleanNoticeColor($('fulfilledNotifyColor')?.value || settings.fulfilledNotifyColor, '3ba55d')};padding-left:8px;">
+        <div style="font-weight:900;">${escapeHtml(fulfilledTitle)}</div>
+        <div style="white-space:pre-wrap;">${escapeHtml(fulfilledMessage)}</div>
+        <div class="${APP}-tiny">Footer: ${escapeHtml(fulfilledFooter)}</div>
+      </div>
+    `;
+  }
+
   function updateEmbedPreview() {
     const preview = $('embedPreview');
     if (!preview) return;
 
     const user = parseUserDisplay($('previewUser')?.value || 'Evil_panda_420 [3236276]');
     const amount = parseAmount($('previewAmount')?.value || '1m');
-    const controls = user.id && amount.ok ? makeFactionControlsGiveMoneyUrl(user.id, amount.raw) : '';
-    const profile = user.id ? `https://www.torn.com/profiles.php?XID=${user.id}` : '';
+    const color = cleanHex($('embedColorPicker')?.value || settings.embedColor);
+    const balance = { amount: 2500000, formatted: '$2,500,000' };
+    const previewRequest = { status: 'Pending', expiresAt: Date.now() + REQUEST_TIMEOUT_MS };
 
     const tempSettings = {
       title: cleanText($('embedTitle')?.value || settings.embedTitle),
       description: String($('embedDescription')?.value || settings.embedDescription).trim(),
-      footer: cleanText($('embedFooter')?.value || settings.embedFooter),
-      color: cleanText($('embedColor')?.value || settings.embedColor)
+      footer: cleanText($('embedFooter')?.value || settings.embedFooter)
     };
 
-    const title = templateValue(tempSettings.title, user, amount.ok ? amount : parseAmount('1m'), controls, profile);
-    const desc = templateValue(tempSettings.description, user, amount.ok ? amount : parseAmount('1m'), controls, profile);
-    const footer = templateValue(tempSettings.footer, user, amount.ok ? amount : parseAmount('1m'), controls, profile);
+    const title = templateValue(tempSettings.title, user, amount.ok ? amount : parseAmount('1m'), balance, previewRequest);
+    const desc = templateValue(tempSettings.description, user, amount.ok ? amount : parseAmount('1m'), balance, previewRequest);
+    const footer = templateValue(tempSettings.footer, user, amount.ok ? amount : parseAmount('1m'), balance, previewRequest);
 
+    preview.style.borderLeftColor = `#${color}`;
     preview.innerHTML = `
       <div style="font-weight:900;font-size:14px;margin-bottom:6px;">${escapeHtml(title || 'New Vault Request')}</div>
       <div style="white-space:pre-wrap;margin-bottom:8px;">${escapeHtml(desc || '')}</div>
-      <div class="${APP}-tiny">Embed colour: #${escapeHtml(tempSettings.color || 'e67300')}</div>
+      <div class="${APP}-tiny">Embed colour: #${escapeHtml(color)}</div>
       <div class="${APP}-tiny">Footer: ${escapeHtml(footer || '')}</div>
-      <div class="${APP}-tiny" style="margin-top:6px;">Buttons: Open Faction Controls + Open Player Profile</div>
+      <div class="${APP}-tiny" style="margin-top:6px;">Buttons only: Open Faction Controls + Open Player Profile</div>
     `;
   }
 
@@ -1347,6 +2900,7 @@
 
     const user = parseUserDisplay($('previewUser')?.value || 'Evil_panda_420 [3236276]');
     const amount = parseAmount($('previewAmount')?.value || '1m');
+    const balance = { amount: 2500000, formatted: '$2,500,000' };
 
     if (!user.id) {
       showToast('Preview user needs a Torn ID like Name [123456].', 'warn');
@@ -1359,7 +2913,7 @@
     }
 
     try {
-      await postWebhook(buildPayload(user, amount));
+      await postWebhook(buildPayload(user, amount, balance));
       showToast('Test embed sent to Discord.', 'ok');
     } catch (err) {
       console.error('[Torn Vault Request Maker] Test failed:', err);
@@ -1382,11 +2936,17 @@
       ${panelHeader('Vault Request Settings', 'Webhook and embed message controls.', '⚙️', 'closeSettings')}
 
       <div class="${APP}-card">
-        <div class="${APP}-cardTitle">Faction Discord Webhook</div>
-        <label for="${APP}-webhookUrl">Discord webhook URL</label>
+        <div class="${APP}-cardTitle">Faction Request Webhook</div>
+        <label for="${APP}-webhookUrl">Discord webhook URL for banker requests</label>
         <input id="${APP}-webhookUrl" type="password" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" value="${escapeHtml(settings.webhookUrl || '')}" />
         <p class="${APP}-note">
-          This webhook is where vault request embeds are sent. It is saved locally in this browser.
+          This webhook is where banker request embeds are sent. It is saved locally in this browser.
+        </p>
+
+        <label for="${APP}-userNotifyWebhookUrl">User notice webhook URL</label>
+        <input id="${APP}-userNotifyWebhookUrl" type="password" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" value="${escapeHtml(settings.userNotifyWebhookUrl || '')}" />
+        <p class="${APP}-note">
+          This second webhook posts timeout and fulfilled notices for users. It can be a separate Discord channel.
         </p>
       </div>
 
@@ -1407,12 +2967,46 @@
         <label for="${APP}-embedFooter">Embed footer</label>
         <input id="${APP}-embedFooter" type="text" value="${escapeHtml(settings.embedFooter)}" />
 
-        <label for="${APP}-embedColor">Embed colour hex</label>
-        <input id="${APP}-embedColor" type="text" value="${escapeHtml(settings.embedColor)}" placeholder="e67300" />
+        <label for="${APP}-embedColorPicker">Embed colour</label>
+        <input id="${APP}-embedColorPicker" type="color" value="#${cleanHex(settings.embedColor)}" />
 
         <p class="${APP}-note">
-          Template codes: <b>{user}</b>, <b>{name}</b>, <b>{id}</b>, <b>{amount}</b>, <b>{raw}</b>, <b>{profile}</b>, <b>{controls}</b>
+          Template codes: <b>{user}</b>, <b>{name}</b>, <b>{id}</b>, <b>{amount}</b>, <b>{raw}</b>, <b>{balance}</b>, <b>{expires}</b>, <b>{expiresFull}</b>, <b>{status}</b>
         </p>
+      </div>
+
+      <div class="${APP}-card">
+        <div class="${APP}-cardTitle">User Notice Messages</div>
+
+        <label for="${APP}-timeoutNotifyTitle">Timeout notice title</label>
+        <input id="${APP}-timeoutNotifyTitle" type="text" value="${escapeHtml(settings.timeoutNotifyTitle)}" />
+
+        <label for="${APP}-timeoutNotifyMessage">Timeout notice message</label>
+        <textarea id="${APP}-timeoutNotifyMessage">${escapeHtml(settings.timeoutNotifyMessage)}</textarea>
+
+        <label for="${APP}-timeoutNotifyFooter">Timeout notice footer</label>
+        <input id="${APP}-timeoutNotifyFooter" type="text" value="${escapeHtml(settings.timeoutNotifyFooter)}" />
+
+        <label for="${APP}-timeoutNotifyColor">Timeout notice colour</label>
+        <input id="${APP}-timeoutNotifyColor" type="color" value="#${cleanNoticeColor(settings.timeoutNotifyColor, 'ed4245')}" />
+
+        <label for="${APP}-fulfilledNotifyTitle">Fulfilled notice title</label>
+        <input id="${APP}-fulfilledNotifyTitle" type="text" value="${escapeHtml(settings.fulfilledNotifyTitle)}" />
+
+        <label for="${APP}-fulfilledNotifyMessage">Fulfilled notice message</label>
+        <textarea id="${APP}-fulfilledNotifyMessage">${escapeHtml(settings.fulfilledNotifyMessage)}</textarea>
+
+        <label for="${APP}-fulfilledNotifyFooter">Fulfilled notice footer</label>
+        <input id="${APP}-fulfilledNotifyFooter" type="text" value="${escapeHtml(settings.fulfilledNotifyFooter)}" />
+
+        <label for="${APP}-fulfilledNotifyColor">Fulfilled notice colour</label>
+        <input id="${APP}-fulfilledNotifyColor" type="color" value="#${cleanNoticeColor(settings.fulfilledNotifyColor, '3ba55d')}" />
+
+        <p class="${APP}-note">
+          Notice template codes: <b>{user}</b>, <b>{tornname}</b>, <b>{name}</b>, <b>{id}</b>, <b>{amount}</b>, <b>{balance}</b>, <b>{banker}</b>, <b>{bankerName}</b>, <b>{bankerId}</b>, <b>{timedOutAt}</b>, <b>{completedAt}</b>
+        </p>
+
+        <div id="${APP}-noticePreview" class="${APP}-embedPreview"></div>
       </div>
 
       <div class="${APP}-card">
@@ -1435,6 +3029,7 @@
     `;
 
     document.body.appendChild(panel);
+    makePanelMoveResize(panel);
 
     $('closeSettings').addEventListener('click', () => panel.remove());
 
@@ -1443,21 +3038,23 @@
       if (btn) btn.addEventListener('click', () => applyPreset(id));
     }
 
-    for (const id of ['webhookUrl', 'embedTitle', 'embedDescription', 'embedFooter', 'embedColor', 'previewUser', 'previewAmount']) {
+    for (const id of ['webhookUrl', 'userNotifyWebhookUrl', 'embedTitle', 'embedDescription', 'embedFooter', 'embedColorPicker', 'timeoutNotifyTitle', 'timeoutNotifyMessage', 'timeoutNotifyFooter', 'timeoutNotifyColor', 'fulfilledNotifyTitle', 'fulfilledNotifyMessage', 'fulfilledNotifyFooter', 'fulfilledNotifyColor', 'previewUser', 'previewAmount']) {
       const el = $(id);
       if (!el) continue;
       el.addEventListener('input', () => {
-        if (['embedTitle', 'embedDescription', 'embedFooter', 'embedColor'].includes(id)) {
+        if (['embedTitle', 'embedDescription', 'embedFooter', 'embedColorPicker'].includes(id)) {
           settings.embedPreset = 'custom';
           updatePresetPills();
         }
         updateEmbedPreview();
+        updateNoticePreview();
       });
     }
 
     $('saveSettings').addEventListener('click', () => {
       saveSettingsFromSettingsPanel();
       updateEmbedPreview();
+      updateNoticePreview();
       showToast('Settings saved locally.', 'ok');
     });
 
@@ -1472,6 +3069,7 @@
 
     updatePresetPills();
     updateEmbedPreview();
+    updateNoticePreview();
   }
 
   function addLauncher() {
@@ -1479,15 +3077,23 @@
 
     const btn = document.createElement('button');
     btn.id = `${APP}-launcher`;
+    btn.className = `${APP}-floatingLauncher`;
     btn.type = 'button';
     btn.textContent = 'Vault Request';
+    btn.title = 'Vault Request';
     btn.addEventListener('click', openRequestPanel);
     document.body.appendChild(btn);
+
+    placeLauncher(false);
   }
 
   function init() {
     addStyles();
     addLauncher();
+    startLauncherWatcher();
+    startRequestTimeoutWatcher();
+    setTimeout(openFulfilledPanelIfNeeded, 1500);
+    window.addEventListener('hashchange', () => setTimeout(openFulfilledPanelIfNeeded, 600));
 
     setTimeout(() => {
       if (!settings.userDisplay) {
