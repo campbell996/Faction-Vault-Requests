@@ -259,3 +259,18 @@ This button:
 - redraws both the notifications list and pending request list
 
 This is still no-backend: the button cannot pull hidden status changes from Discord by itself. It can apply the status data from the Discord sync link and refresh local browser data.
+
+
+## Refresh Button Final-Status Check
+
+The **Update / Refresh Request Panel** button now checks every local pending request.
+
+When clicked, it will:
+
+- remove requests that timed out locally
+- check the original Discord request message when a Discord message ID is saved
+- remove the pending request if the Discord message now says **Fulfilled**, **Canceled**, or **Expired/Timed out**
+- add a matching local notification
+- refresh the pending request list and notification list
+
+If the original Discord request message was deleted by admins, the script does **not** guess the final status and does **not** repost it. The pending request is left alone unless a status-sync link is clicked or the request times out locally.

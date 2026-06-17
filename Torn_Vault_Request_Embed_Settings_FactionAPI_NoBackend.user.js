@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.19.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, main panel update/refresh button, visible requester status sync embed links plus buttons for fulfilled/cancelled/timed-out, final status notifications and pending cleanup, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.20.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, refresh checks Discord final status, main panel update/refresh button, visible requester status sync embed links plus buttons for fulfilled/cancelled/timed-out, final status notifications and pending cleanup, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -311,6 +311,41 @@
     }
   }
 
+  function getWebhookMessageUrl(messageId) {
+    return getWebhookEditUrl(messageId);
+  }
+
+  async function fetchRequestDiscordMessage(messageId) {
+    if (!messageId || !webhookLooksValid(settings.webhookUrl)) {
+      return { ok: false, status: 0, deleted: false, data: null, error: 'Missing webhook URL or Discord message ID.' };
+    }
+
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: getWebhookMessageUrl(messageId),
+        headers: { Accept: 'application/json' },
+        timeout: 30000
+      });
+
+      if (res.status === 404) {
+        return { ok: false, status: res.status, deleted: true, data: null, error: 'Discord request message was deleted or not found.' };
+      }
+
+      if (res.status < 200 || res.status >= 300) {
+        return { ok: false, status: res.status, deleted: false, data: null, error: `Discord returned HTTP ${res.status}.` };
+      }
+
+      try {
+        return { ok: true, status: res.status, deleted: false, data: JSON.parse(res.responseText || '{}'), error: '' };
+      } catch {
+        return { ok: false, status: res.status, deleted: false, data: null, error: 'Discord returned unreadable message data.' };
+      }
+    } catch (err) {
+      return { ok: false, status: 0, deleted: false, data: null, error: err.message || String(err) };
+    }
+  }
+
   function makeRequestId(userId, amountRaw) {
     return `${Date.now()}-${String(userId || 'unknown')}-${String(amountRaw || '0')}-${Math.random().toString(36).slice(2, 8)}`;
   }
@@ -494,15 +529,23 @@
       reloadSettingsFromStorage();
 
       const synced = processRequesterStatusSyncFromUrl();
+      const statusResult = await checkPendingRequestFinalStatuses();
       await checkPendingRequestTimeouts();
       updateRequestNotificationsPanel();
 
       if (showToastOnSuccess) {
+        const removedCount = Number(statusResult?.removed || 0);
+        const missingCount = Number(statusResult?.deletedOrMissing || 0);
+
         showToast(
           synced
             ? 'Request status synced. Pending requests and notifications refreshed.'
-            : 'Pending requests and notifications refreshed.',
-          'ok'
+            : removedCount
+              ? `${removedCount} finished request${removedCount === 1 ? '' : 's'} removed from pending.`
+              : missingCount
+                ? 'Refresh complete. A Discord message was deleted, so it was not removed from pending.'
+                : 'Pending requests and notifications refreshed.',
+          removedCount ? 'ok' : 'ok'
         );
       }
 
@@ -2373,6 +2416,132 @@
     );
 
     showToast('Vault request timed out after 5 hours and was removed from pending requests.', 'warn');
+  }
+
+  function detectFinalStatusFromDiscordMessage(message) {
+    const embeds = Array.isArray(message?.embeds) ? message.embeds : [];
+    const parts = [];
+
+    for (const embed of embeds) {
+      parts.push(embed.title || '', embed.description || '', embed.footer?.text || '');
+      for (const field of (embed.fields || [])) {
+        parts.push(field.name || '', field.value || '');
+      }
+    }
+
+    const textBlob = cleanText(parts.join(' ')).toLowerCase();
+
+    if (!textBlob) return '';
+
+    if (
+      textBlob.includes('vault request fulfilled') ||
+      textBlob.includes('status fulfilled') ||
+      textBlob.includes('fulfilled by') ||
+      /\bfulfilled\b/i.test(textBlob)
+    ) {
+      return 'fulfilled';
+    }
+
+    if (
+      textBlob.includes('vault request canceled') ||
+      textBlob.includes('vault request cancelled') ||
+      textBlob.includes('status canceled') ||
+      textBlob.includes('status cancelled') ||
+      textBlob.includes('unavailable vault funds') ||
+      /\bcancelled\b/i.test(textBlob) ||
+      /\bcanceled\b/i.test(textBlob)
+    ) {
+      return 'cancelled';
+    }
+
+    if (
+      textBlob.includes('vault request expired') ||
+      textBlob.includes('vault request timed out') ||
+      textBlob.includes('status expired') ||
+      textBlob.includes('status timed out') ||
+      /\btimed out\b/i.test(textBlob) ||
+      /\bexpired\b/i.test(textBlob)
+    ) {
+      return 'timedout';
+    }
+
+    return '';
+  }
+
+  function finalStatusMessageFromRequest(req, status) {
+    const amount = req.amount?.formatted || '$0';
+
+    if (status === 'fulfilled') {
+      return `${amount} vault request was fulfilled and removed from pending requests.`;
+    }
+
+    if (status === 'cancelled' || status === 'canceled') {
+      return `${amount} vault request was canceled and removed from pending requests.`;
+    }
+
+    if (status === 'timedout' || status === 'expired') {
+      return `${amount} vault request timed out and was removed from pending requests.`;
+    }
+
+    return `${amount} vault request was updated and removed from pending requests.`;
+  }
+
+  async function checkPendingRequestFinalStatuses() {
+    ensureRequestStores();
+
+    const pending = settings.pendingRequests
+      .filter(req => req.status === 'pending');
+
+    let removed = 0;
+    let checkedDiscord = 0;
+    let deletedOrMissing = 0;
+    let errors = 0;
+
+    for (const req of pending) {
+      const requestId = req.id;
+      const now = Date.now();
+
+      if (Number(req.expiresAt || 0) && Number(req.expiresAt || 0) <= now) {
+        await expireRequest(req);
+        removed += 1;
+        continue;
+      }
+
+      let finalStatus = '';
+
+      if (hasRequestAction(requestId, 'fulfilled')) finalStatus = 'fulfilled';
+      if (hasRequestAction(requestId, 'cancelledUnavailableFunds')) finalStatus = 'cancelled';
+      if (hasRequestAction(requestId, 'expired')) finalStatus = 'timedout';
+
+      if (!finalStatus && req.discordMessageId && webhookLooksValid(settings.webhookUrl)) {
+        checkedDiscord += 1;
+        const fetched = await fetchRequestDiscordMessage(req.discordMessageId);
+
+        if (fetched.ok) {
+          finalStatus = detectFinalStatusFromDiscordMessage(fetched.data);
+        } else if (fetched.deleted) {
+          deletedOrMissing += 1;
+          // Admin-deleted messages are not treated as fulfilled/canceled/timed-out.
+          // Leave the pending request in place so we do not guess wrong or repost anything.
+        } else {
+          errors += 1;
+        }
+      }
+
+      if (!finalStatus) continue;
+
+      markRequestAction(requestId, `refreshDetected_${finalStatus}`, {
+        refreshDetectedStatus: finalStatus,
+        refreshDetectedAt: Date.now()
+      });
+
+      finalizePendingRequest(requestId, finalStatus === 'expired' ? 'timedout' : finalStatus, finalStatusMessageFromRequest(req, finalStatus));
+      removed += 1;
+    }
+
+    updateRequestNotificationsPanel();
+
+    return { removed, checkedDiscord, deletedOrMissing, errors };
   }
 
   async function checkPendingRequestTimeouts() {
@@ -4249,7 +4418,7 @@
           <button type="button" class="${APP}-btn" id="${APP}-markNoticesRead">Mark Notifications Read</button>
         </div>
         <p class="${APP}-note">
-          Use <b>Update / Refresh Request Panel</b> after clicking a Discord status link, or any time you want to refresh pending requests and notifications.
+          Use <b>Update / Refresh Request Panel</b> after clicking a Discord status link, or any time you want to check whether pending requests were fulfilled, canceled, or timed out.
         </p>
         <div class="${APP}-cardTitle" style="margin-top:12px;">Pending Requests</div>
         <div id="${APP}-pendingRequests"></div>
@@ -4270,7 +4439,7 @@
           4. When the banker opens faction controls from Discord, their banker panel checks your current faction vault balance so they can approve or deny manually.
         </p>
         <p class="${APP}-note">
-          5. The request stays pending for <b>5 hours</b>. Click <b>Update / Refresh Request Panel</b> to refresh pending requests, notifications, and any Discord status-sync link.
+          5. The request stays pending for <b>5 hours</b>. Click <b>Update / Refresh Request Panel</b> to check if pending requests were fulfilled, canceled, or timed out, then refresh notifications.
         </p>
         <p class="${APP}-note">
           6. A banker/leader reviews the Discord embed and manually pays it from Torn faction controls.
