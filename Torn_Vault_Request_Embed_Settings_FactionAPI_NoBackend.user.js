@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.1.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, blank default user field with Torn name/ID prefill button, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.4.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -80,6 +80,8 @@
     requestNotifications: [],
     discordUserId: '',
     discordName: '',
+    userProfiles: {},
+    lastDetectedUserId: '',
 
     timeoutNotifyTitle: 'Vault Request Timed Out',
     timeoutNotifyMessage: '{user} your vault request for {amount} timed out before a banker could complete it.',
@@ -147,6 +149,62 @@
 
   function saveSettings() {
     localStorage.setItem(STORE_KEY, JSON.stringify(settings));
+  }
+
+  function ensureUserProfiles() {
+    if (!settings.userProfiles || typeof settings.userProfiles !== 'object' || Array.isArray(settings.userProfiles)) {
+      settings.userProfiles = {};
+    }
+    return settings.userProfiles;
+  }
+
+  function profileKeyFromUser(user) {
+    const id = String(user?.id || '').replace(/[^\d]/g, '');
+    return id ? `torn:${id}` : '';
+  }
+
+  function displayFromUser(user) {
+    if (!user?.id || !user?.name) return '';
+    return `${cleanText(user.name)} [${String(user.id).replace(/[^\d]/g, '')}]`;
+  }
+
+  function getProfileForUser(user) {
+    const key = profileKeyFromUser(user);
+    if (!key) return null;
+    return ensureUserProfiles()[key] || null;
+  }
+
+  function saveProfileForUser(user, patch = {}) {
+    const key = profileKeyFromUser(user);
+    if (!key) return;
+
+    const profiles = ensureUserProfiles();
+    const current = profiles[key] || {};
+    profiles[key] = {
+      ...current,
+      ...patch,
+      tornName: user.name || current.tornName || '',
+      tornId: String(user.id || current.tornId || ''),
+      userDisplay: patch.userDisplay || current.userDisplay || displayFromUser(user),
+      updatedAt: Date.now()
+    };
+
+    settings.lastDetectedUserId = String(user.id || '');
+    saveSettings();
+  }
+
+  function getTypedUserFromPanelOrSettings() {
+    const raw = $('user')?.value || settings.userDisplay || '';
+    const parsed = parseUserDisplay(raw);
+    return parsed?.id ? parsed : null;
+  }
+
+  function getCurrentUserProfileKey() {
+    const typed = getTypedUserFromPanelOrSettings();
+    if (typed?.id) return profileKeyFromUser(typed);
+
+    const id = String(settings.lastDetectedUserId || '').replace(/[^\d]/g, '');
+    return id ? `torn:${id}` : '';
   }
 
   function $(id) {
@@ -444,15 +502,130 @@
     return null;
   }
 
-  function getCurrentUserDisplay() {
-    if (settings.userDisplay) return settings.userDisplay;
+  function findSelfFromStorage() {
+    const stores = [];
 
-    const found = findSelfFromWindow() || findSelfFromScripts() || findSelfFromDom();
-    if (found?.name && found?.id) {
-      return `${found.name} [${found.id}]`;
+    try { stores.push(localStorage); } catch {}
+    try { stores.push(sessionStorage); } catch {}
+
+    const patterns = [
+      /"name"\s*:\s*"([^"]{2,40})"[^{}]{0,350}"(?:userID|userId|id|player_id|playerId|XID|xid)"\s*:\s*"?(\d{3,12})"?/i,
+      /"(?:userID|userId|id|player_id|playerId|XID|xid)"\s*:\s*"?(\d{3,12})"?[^{}]{0,350}"name"\s*:\s*"([^"]{2,40})"/i,
+      /(?:userName|username|playerName|name)["']?\s*[:=]\s*["']([^"']{2,40})["'][\s\S]{0,350}(?:userID|userId|playerId|player_id|XID|xid|id)["']?\s*[:=]\s*["']?(\d{3,12})/i,
+      /(?:userID|userId|playerId|player_id|XID|xid|id)["']?\s*[:=]\s*["']?(\d{3,12})["']?[\s\S]{0,350}(?:userName|username|playerName|name)["']?\s*[:=]\s*["']([^"']{2,40})["']/i
+    ];
+
+    for (const store of stores) {
+      for (let i = 0; i < store.length; i++) {
+        const key = store.key(i);
+        const value = `${key || ''} ${store.getItem(key) || ''}`;
+        if (!/user|player|torn|profile|session|auth/i.test(value)) continue;
+
+        for (const re of patterns) {
+          const m = value.match(re);
+          if (!m) continue;
+
+          const a = m[1];
+          const b = m[2];
+          const firstIsId = /^\d+$/.test(a);
+          const id = firstIsId ? a : b;
+          const name = firstIsId ? b : a;
+
+          if (name && id) return { name: cleanText(name), id: String(id).replace(/[^\d]/g, '') };
+        }
+      }
     }
 
-    return '';
+    return null;
+  }
+
+  function findSelfFromHtml() {
+    const html = String(document.documentElement?.innerHTML || '').slice(0, 1500000);
+
+    const patterns = [
+      /(?:userName|username|playerName|name)["']?\s*[:=]\s*["']([^"']{2,40})["'][\s\S]{0,500}(?:userID|userId|playerId|player_id|XID|xid|id)["']?\s*[:=]\s*["']?(\d{3,12})/i,
+      /(?:userID|userId|playerId|player_id|XID|xid|id)["']?\s*[:=]\s*["']?(\d{3,12})["']?[\s\S]{0,500}(?:userName|username|playerName|name)["']?\s*[:=]\s*["']([^"']{2,40})["']/i,
+      /profiles\.php\?XID=(\d{3,12})["'][^>]{0,500}>([^<]{2,40})</i
+    ];
+
+    for (const re of patterns) {
+      const m = html.match(re);
+      if (!m) continue;
+
+      const a = m[1];
+      const b = m[2];
+      const firstIsId = /^\d+$/.test(a);
+      const id = firstIsId ? a : b;
+      const name = cleanText(firstIsId ? b : a).replace(/<[^>]*>/g, '');
+
+      if (name && id && !/faction|bank|vault|warfare|points|merits/i.test(name)) {
+        return { name, id: String(id).replace(/[^\d]/g, '') };
+      }
+    }
+
+    return null;
+  }
+
+  function findSelfFromProfileLinksAggressive() {
+    const links = Array.from(document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="/profiles.php?XID="]'))
+      .map(link => {
+        const href = link.getAttribute('href') || '';
+        const idMatch = href.match(/XID=(\d{3,12})/i);
+        const id = idMatch ? idMatch[1] : '';
+        let name = cleanText(link.textContent || link.getAttribute('title') || link.getAttribute('aria-label') || '');
+        name = name.replace(/\s*\[\d+\]\s*$/, '').replace(/^(profile|view profile)\s*/i, '').trim();
+
+        let score = scoreProfileLink(link);
+        let node = link;
+        for (let i = 0; node && i < 7; i++, node = node.parentElement) {
+          const blob = `${node.id || ''} ${node.className || ''}`.toLowerCase();
+          if (/sidebar|top|header|logged|account|user|profile|menu|status|bar/.test(blob)) score += 8;
+          if (/faction|member|bank|vault|war|attack|enemy|list|table/.test(blob)) score -= 8;
+        }
+
+        const rect = link.getBoundingClientRect();
+        if (rect.top >= 0 && rect.top < 160) score += 12;
+        if (rect.left >= 0 && rect.left < 420) score += 5;
+
+        return { id, name, score };
+      })
+      .filter(x => x.id && x.name && x.name.length <= 40)
+      .sort((a, b) => b.score - a.score);
+
+    if (links[0] && links[0].score > 0) {
+      return { name: links[0].name, id: links[0].id };
+    }
+
+    return null;
+  }
+
+  function detectCurrentTornUser() {
+    const found =
+      findSelfFromWindow() ||
+      findSelfFromDom() ||
+      findSelfFromProfileLinksAggressive() ||
+      findSelfFromScripts() ||
+      findSelfFromStorage() ||
+      findSelfFromHtml();
+
+    if (found?.name && found?.id) {
+      const clean = {
+        name: cleanText(found.name).replace(/\s*\[\d+\]\s*$/, '').trim(),
+        id: String(found.id).replace(/[^\d]/g, '')
+      };
+
+      if (clean.name && clean.id) {
+        settings.lastDetectedUserId = clean.id;
+        return clean;
+      }
+    }
+
+    return null;
+  }
+
+  function getCurrentUserDisplay() {
+    const found = detectCurrentTornUser();
+    return found ? displayFromUser(found) : '';
   }
 
   function parseUserDisplay(value) {
@@ -1151,7 +1324,6 @@
       }
     }
 
-    // De-dupe values found by both patterns.
     const seen = new Set();
     return matches.filter(item => {
       const key = `${item.amount}:${item.index}`;
@@ -1161,57 +1333,111 @@
     });
   }
 
-  function scoreVisibleBalanceBlock(el, user, text, moneyItem) {
-    const lower = text.toLowerCase();
-    const id = String(user?.id || '');
-    const name = cleanText(user?.name || user?.display || '').replace(/\s*\[\d+\]\s*$/, '').toLowerCase();
-    const cls = String(el.className || '').toLowerCase();
-    const eid = String(el.id || '').toLowerCase();
-    const blob = `${lower} ${cls} ${eid}`;
-
-    let score = 0;
-
-    if (id && lower.includes(id)) score += 65;
-    if (name && name.length >= 2 && lower.includes(name)) score += 45;
-
-    if (/vault|balance|bank|faction|money|cash|funds|available|deposit|withdraw/.test(blob)) score += 25;
-    if (/member|player|user/.test(blob)) score += 10;
-    if (/request|requested|amount|give money|confirm|send/.test(blob)) score -= 18;
-    if (/total faction|faction total|vault total|bank total/.test(blob)) score -= 20;
-    if (text.length > 1200) score -= 18;
-    if (text.length < 15) score -= 10;
-
-    // Prefer money values near balance/vault wording.
-    const idx = moneyItem.index || 0;
-    const around = lower.slice(Math.max(0, idx - 90), Math.min(lower.length, idx + 90));
-    if (/balance|vault|available|funds|money|cash/.test(around)) score += 20;
-    if (/request|requested|give|confirm|send/.test(around)) score -= 15;
-
-    const rect = el.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) score += 5;
-
-    return score;
+  function isGoodBalanceLabel(text) {
+    return /\b(balance|vault|funds|available|available balance|money balance|bank balance|cash balance|member balance|faction balance)\b/i.test(String(text || ''));
   }
 
-  function findVisibleVaultBalanceForUser(user) {
+  function isBadBalanceLabel(text) {
+    return /\b(request|requested|requesting|amount requested|give money|confirm|send|deposit|withdraw|paid|payment|fee|cost|price|total faction|faction total|vault total|bank total|total vault|total balance|networth|points|respect|bonus)\b/i.test(String(text || ''));
+  }
+
+  function rowContainsUser(text, user) {
+    const lower = String(text || '').toLowerCase();
     const id = String(user?.id || '').trim();
-    const name = cleanText(user?.name || user?.display || '').replace(/\s*\[\d+\]\s*$/, '').toLowerCase();
+    const name = cleanText(user?.name || user?.display || '')
+      .replace(/\s*\[\d+\]\s*$/, '')
+      .toLowerCase();
 
-    if (!id && !name) return null;
+    return !!((id && lower.includes(id)) || (name && name.length >= 2 && lower.includes(name)));
+  }
 
+  function getTableHeadersForRow(row) {
+    const table = row.closest('table');
+    if (!table) return [];
+
+    const allRows = Array.from(table.querySelectorAll('tr'));
+    const headerRows = allRows.filter(r =>
+      r !== row &&
+      r.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING &&
+      Array.from(r.children).some(c => c.matches('th') || /balance|vault|funds|available|member|user|name/i.test(c.textContent || ''))
+    );
+
+    const headerRow = headerRows[headerRows.length - 1] || table.querySelector('thead tr') || allRows.find(r => Array.from(r.children).some(c => c.matches('th')));
+
+    if (!headerRow) return [];
+
+    return Array.from(headerRow.children).map(c => cleanText(c.innerText || c.textContent || ''));
+  }
+
+  function scanTableRowsForVisibleBalance(user) {
+    const candidates = [];
+
+    for (const row of Array.from(document.querySelectorAll('tr'))) {
+      if (!row || row.closest?.(`.${APP}-panel`)) continue;
+      if (!isVisibleElement(row)) continue;
+
+      const rowText = cleanText(row.innerText || row.textContent || '');
+      if (!rowContainsUser(rowText, user)) continue;
+      if (isBadBalanceLabel(rowText) && !isGoodBalanceLabel(rowText)) continue;
+
+      const cells = Array.from(row.children).filter(c => isVisibleElement(c));
+      if (!cells.length) continue;
+
+      const headers = getTableHeadersForRow(row);
+
+      for (let i = 0; i < cells.length; i++) {
+        const cell = cells[i];
+        const cellText = cleanText(cell.innerText || cell.textContent || '');
+        const moneyTokens = parseMoneyTokensFromText(cellText);
+
+        if (!moneyTokens.length) continue;
+
+        const headerText = cleanText(headers[i] || cell.getAttribute('data-title') || cell.getAttribute('aria-label') || '');
+        const previousText = cleanText(cells[i - 1]?.innerText || cells[i - 1]?.textContent || '');
+        const nextText = cleanText(cells[i + 1]?.innerText || cells[i + 1]?.textContent || '');
+        const context = `${headerText} ${previousText} ${cellText} ${nextText} ${rowText}`;
+        const strongLabel = isGoodBalanceLabel(`${headerText} ${previousText} ${nextText}`) || isGoodBalanceLabel(cell.getAttribute('class') || '');
+        const badLabel = isBadBalanceLabel(`${headerText} ${previousText} ${nextText}`);
+
+        for (const money of moneyTokens) {
+          let score = 0;
+
+          if (strongLabel) score += 120;
+          if (isGoodBalanceLabel(context)) score += 55;
+          if (badLabel) score -= 95;
+          if (isBadBalanceLabel(cellText)) score -= 65;
+          if (rowText.length < 700) score += 15;
+          if (money.amount > 0) score += 5;
+
+          candidates.push({
+            amount: money.amount,
+            formatted: formatMoney(money.amount),
+            raw: money.raw,
+            score,
+            source: strongLabel ? 'visible-table-labelled-balance' : 'visible-table-row-balance',
+            label: headerText,
+            text: rowText
+          });
+        }
+      }
+    }
+
+    return candidates;
+  }
+
+  function scanLabelledBlocksForVisibleBalance(user) {
+    const candidates = [];
     const selectors = [
-      'tr',
       'li',
       '[class*="member" i]',
       '[class*="balance" i]',
       '[class*="vault" i]',
       '[class*="bank" i]',
-      '[class*="money" i]',
-      '[class*="user" i]',
-      'div'
+      '[class*="fund" i]',
+      '[class*="available" i]',
+      '[class*="money" i]'
     ];
 
-    const candidates = [];
     const seen = new Set();
 
     for (const el of Array.from(document.querySelectorAll(selectors.join(',')))) {
@@ -1222,32 +1448,72 @@
       if (!isVisibleElement(el)) continue;
 
       const text = cleanText(el.innerText || el.textContent || '');
-      if (!text || text.length < 8 || text.length > 2200) continue;
-
-      const lower = text.toLowerCase();
-      const hasUser = (id && lower.includes(id)) || (name && name.length >= 2 && lower.includes(name));
-      if (!hasUser) continue;
+      if (!text || text.length < 10 || text.length > 900) continue;
+      if (!rowContainsUser(text, user)) continue;
 
       const moneyTokens = parseMoneyTokensFromText(text);
       if (!moneyTokens.length) continue;
 
       for (const money of moneyTokens) {
-        const score = scoreVisibleBalanceBlock(el, user, text, money);
+        const lower = text.toLowerCase();
+        const around = lower.slice(Math.max(0, money.index - 110), Math.min(lower.length, money.index + 110));
+        const labelAround = isGoodBalanceLabel(around);
+        const badAround = isBadBalanceLabel(around);
+
+        if (!labelAround) continue;
+
+        let score = 0;
+        if (labelAround) score += 100;
+        if (/vault|balance|funds|available|bank/i.test(String(el.className || '') + ' ' + String(el.id || ''))) score += 25;
+        if (badAround) score -= 90;
+        if (money.amount > 0) score += 5;
 
         candidates.push({
           amount: money.amount,
           formatted: formatMoney(money.amount),
           raw: money.raw,
           score,
-          text,
-          source: 'visible-page'
+          source: 'visible-labelled-block-balance',
+          label: 'nearby balance label',
+          text
         });
       }
     }
 
-    candidates.sort((a, b) => b.score - a.score || b.amount - a.amount);
+    return candidates;
+  }
 
-    const best = candidates.find(c => c.score > 35) || null;
+  function chooseSafestVisibleBalanceCandidate(candidates) {
+    const filtered = candidates
+      .filter(c => Number.isFinite(c.amount) && c.amount >= 0)
+      .filter(c => c.score >= 95)
+      .sort((a, b) => b.score - a.score);
+
+    if (!filtered.length) return null;
+
+    const best = filtered[0];
+    const second = filtered[1];
+
+    if (second && second.amount !== best.amount && (best.score - second.score) < 35) {
+      console.warn('[Vault Request] Refused visible balance fallback because multiple balance candidates were too close:', filtered.slice(0, 4));
+      return null;
+    }
+
+    return best;
+  }
+
+  function findVisibleVaultBalanceForUser(user) {
+    const id = String(user?.id || '').trim();
+    const name = cleanText(user?.name || user?.display || '').replace(/\s*\[\d+\]\s*$/, '').toLowerCase();
+
+    if (!id && !name) return null;
+
+    const candidates = [
+      ...scanTableRowsForVisibleBalance(user),
+      ...scanLabelledBlocksForVisibleBalance(user)
+    ];
+
+    const best = chooseSafestVisibleBalanceCandidate(candidates);
 
     if (best) {
       return {
@@ -1255,10 +1521,12 @@
         formatted: best.formatted,
         source: best.source,
         checkedAt: Date.now(),
-        debugText: best.text
+        debugText: best.text,
+        label: best.label || ''
       };
     }
 
+    console.warn('[Vault Request] No safe visible balance candidate found. Candidates:', candidates.slice(0, 8));
     return null;
   }
 
@@ -1308,7 +1576,7 @@
     }
 
     if (!key) {
-      throw new Error('Could not confirm vault balance without an API key. Open the Torn faction vault/balance/controls page where this member balance is visible, then click Check Vault Balance again.');
+      throw new Error('Could not safely confirm vault balance without an API key. Open the Torn faction vault/balance page where this member has a labelled Balance/Vault/Funds/Available amount visible, then click Check Vault Balance again.');
     }
 
     throw new Error(errors[0] || 'Could not confirm this member vault balance from the API or the visible Torn page.');
@@ -1375,7 +1643,7 @@
     balanceCheckLocked = true;
     updateBalanceStatus(settings.apiKey
       ? 'Vault balance: checking with API...'
-      : 'Vault balance: checking visible Torn page...', 'warn');
+      : 'Vault balance: checking visible Torn page for a labelled member balance...', 'warn');
 
     try {
       const balance = await getMemberVaultBalance(user.id, { user });
@@ -1874,65 +2142,135 @@
 
     const header = panel.querySelector(`.${APP}-header`);
     let dragging = false;
+    let resizing = false;
     let startX = 0;
     let startY = 0;
     let startLeft = 0;
     let startTop = 0;
+    let startWidth = 0;
+    let startHeight = 0;
+
+    const pointFromEvent = (ev) => {
+      const touch = ev.touches?.[0] || ev.changedTouches?.[0];
+      return {
+        clientX: touch ? touch.clientX : ev.clientX,
+        clientY: touch ? touch.clientY : ev.clientY
+      };
+    };
 
     const onMove = (ev) => {
-      if (!dragging) return;
+      if (!dragging && !resizing) return;
 
       ev.preventDefault();
 
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
+      const point = pointFromEvent(ev);
+      const dx = point.clientX - startX;
+      const dy = point.clientY - startY;
       const rect = panel.getBoundingClientRect();
       const pad = 8;
 
-      let left = startLeft + dx;
-      let top = startTop + dy;
+      if (dragging) {
+        let left = startLeft + dx;
+        let top = startTop + dy;
 
-      left = Math.max(pad, Math.min(left, window.innerWidth - Math.min(rect.width, window.innerWidth - pad)));
-      top = Math.max(pad, Math.min(top, window.innerHeight - Math.min(rect.height, window.innerHeight - pad)));
+        left = Math.max(pad, Math.min(left, window.innerWidth - Math.min(rect.width, window.innerWidth - pad)));
+        top = Math.max(pad, Math.min(top, window.innerHeight - Math.min(rect.height, window.innerHeight - pad)));
 
-      panel.style.left = `${left}px`;
-      panel.style.top = `${top}px`;
-      panel.style.right = 'auto';
-      panel.style.bottom = 'auto';
+        panel.style.left = `${left}px`;
+        panel.style.top = `${top}px`;
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+      }
+
+      if (resizing) {
+        const width = Math.max(320, Math.min(window.innerWidth - pad - rect.left, startWidth + dx));
+        const height = Math.max(260, Math.min(window.innerHeight - pad - rect.top, startHeight + dy));
+
+        panel.style.width = `${width}px`;
+        panel.style.height = `${height}px`;
+        panel.style.maxHeight = 'none';
+      }
     };
 
     const onUp = () => {
-      if (!dragging) return;
+      if (!dragging && !resizing) return;
 
       dragging = false;
+      resizing = false;
       panel.classList.remove(`${APP}-dragging`);
       document.removeEventListener('mousemove', onMove, true);
       document.removeEventListener('mouseup', onUp, true);
+      document.removeEventListener('touchmove', onMove, true);
+      document.removeEventListener('touchend', onUp, true);
+      document.removeEventListener('touchcancel', onUp, true);
       savePanelState(panel, key);
     };
 
+    const startDrag = (ev) => {
+      if (ev.button !== undefined && ev.button !== 0) return;
+      if (ev.target.closest('button,input,textarea,select,a')) return;
+
+      const point = pointFromEvent(ev);
+      const rect = panel.getBoundingClientRect();
+
+      dragging = true;
+      resizing = false;
+      startX = point.clientX;
+      startY = point.clientY;
+      startLeft = rect.left;
+      startTop = rect.top;
+
+      panel.classList.add(`${APP}-dragging`);
+      panel.style.left = `${rect.left}px`;
+      panel.style.top = `${rect.top}px`;
+      panel.style.right = 'auto';
+      panel.style.bottom = 'auto';
+
+      document.addEventListener('mousemove', onMove, true);
+      document.addEventListener('mouseup', onUp, true);
+      document.addEventListener('touchmove', onMove, true);
+      document.addEventListener('touchend', onUp, true);
+      document.addEventListener('touchcancel', onUp, true);
+      ev.preventDefault();
+    };
+
+    const startResize = (ev) => {
+      if (ev.button !== undefined && ev.button !== 0) return;
+
+      const point = pointFromEvent(ev);
+      const rect = panel.getBoundingClientRect();
+
+      dragging = false;
+      resizing = true;
+      startX = point.clientX;
+      startY = point.clientY;
+      startWidth = rect.width;
+      startHeight = rect.height;
+
+      panel.style.width = `${rect.width}px`;
+      panel.style.height = `${rect.height}px`;
+      panel.style.maxHeight = 'none';
+
+      document.addEventListener('mousemove', onMove, true);
+      document.addEventListener('mouseup', onUp, true);
+      document.addEventListener('touchmove', onMove, true);
+      document.addEventListener('touchend', onUp, true);
+      document.addEventListener('touchcancel', onUp, true);
+      ev.preventDefault();
+    };
+
     if (header) {
-      header.addEventListener('mousedown', (ev) => {
-        if (ev.button !== 0) return;
-        if (ev.target.closest('button,input,textarea,select,a')) return;
+      header.addEventListener('mousedown', startDrag);
+      header.addEventListener('touchstart', startDrag, { passive: false });
+    }
 
-        const rect = panel.getBoundingClientRect();
-        dragging = true;
-        startX = ev.clientX;
-        startY = ev.clientY;
-        startLeft = rect.left;
-        startTop = rect.top;
-
-        panel.classList.add(`${APP}-dragging`);
-        panel.style.left = `${rect.left}px`;
-        panel.style.top = `${rect.top}px`;
-        panel.style.right = 'auto';
-        panel.style.bottom = 'auto';
-
-        document.addEventListener('mousemove', onMove, true);
-        document.addEventListener('mouseup', onUp, true);
-        ev.preventDefault();
-      });
+    if (!panel.querySelector(`.${APP}-resizeGrip`)) {
+      const grip = document.createElement('div');
+      grip.className = `${APP}-resizeGrip`;
+      grip.title = 'Resize';
+      panel.appendChild(grip);
+      grip.addEventListener('mousedown', startResize);
+      grip.addEventListener('touchstart', startResize, { passive: false });
     }
 
     let resizeSaveTimer = null;
@@ -1987,14 +2325,14 @@
 
       #${APP}-launcher {
         z-index: 999999;
-        border: 1px solid var(--${APP}-line);
-        border-radius: 14px;
-        background: linear-gradient(180deg, #36210c, #130d07);
+        border: 0;
+        border-radius: 12px;
+        background: transparent;
         color: #ffe1ad;
-        padding: 9px 13px;
+        padding: 2px;
         cursor: pointer;
         font: 900 13px Arial, sans-serif;
-        box-shadow: 0 8px 28px rgba(0,0,0,.42);
+        box-shadow: none;
         white-space: nowrap;
         line-height: 1.1;
       }
@@ -2010,6 +2348,8 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        width: 42px;
+        height: 42px;
         min-height: 32px;
         margin-left: 8px;
         margin-right: 4px;
@@ -2024,6 +2364,8 @@
         width: min(470px, calc(100vw - 30px));
         max-height: min(760px, calc(100vh - 92px));
         overflow: auto;
+        scrollbar-width: thin;
+        scrollbar-color: var(--${APP}-line) #120c07;
         border: 1px solid var(--${APP}-line);
         border-radius: 18px;
         background:
@@ -2037,6 +2379,36 @@
         resize: both;
         min-width: 320px;
         min-height: 260px;
+      }
+
+      .${APP}-panel::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+
+      .${APP}-panel::-webkit-scrollbar-track {
+        background: #120c07;
+        border-radius: 999px;
+      }
+
+      .${APP}-panel::-webkit-scrollbar-thumb {
+        background: #7a4d1d;
+        border: 2px solid #120c07;
+        border-radius: 999px;
+      }
+
+      .${APP}-resizeGrip {
+        position: sticky;
+        float: right;
+        right: 2px;
+        bottom: 2px;
+        width: 18px;
+        height: 18px;
+        margin: 8px 0 0 auto;
+        border-right: 3px solid rgba(255,179,71,.85);
+        border-bottom: 3px solid rgba(255,179,71,.85);
+        cursor: nwse-resize;
+        opacity: .8;
       }
 
       .${APP}-panel.${APP}-dragging {
@@ -2070,16 +2442,38 @@
       }
 
       .${APP}-logo {
-        width: 38px;
-        height: 38px;
+        width: 46px;
+        height: 46px;
         border-radius: 12px;
         display: grid;
         place-items: center;
-        border: 1px solid rgba(255,179,71,.7);
-        background: linear-gradient(180deg, #3c250d, #0b0704);
+        border: 0;
+        background: transparent;
         color: #ffcc7a;
         font-size: 20px;
-        box-shadow: inset 0 0 16px rgba(255,179,71,.15);
+        box-shadow: none;
+        overflow: visible;
+        flex: 0 0 auto;
+      }
+
+      .${APP}-logoSvg {
+        display: block;
+        background: transparent;
+        pointer-events: none;
+      }
+
+      .${APP}-logoSvg.launcher {
+        width: 40px;
+        height: 40px;
+      }
+
+      .${APP}-logoSvg.panelLogo {
+        width: 46px;
+        height: 46px;
+      }
+
+      #${APP}-launcher:hover .${APP}-logoSvg {
+        filter: brightness(1.18) drop-shadow(0 0 8px rgba(255,179,71,.65));
       }
 
       .${APP}-title {
@@ -2358,7 +2752,12 @@
         }
 
         #${APP}-launcher {
-          padding: 9px 11px;
+          padding: 2px;
+        }
+
+        .${APP}-logoSvg.launcher {
+          width: 36px;
+          height: 36px;
         }
         .${APP}-panel {
           right: 10px;
@@ -2372,13 +2771,73 @@
     document.head.appendChild(style);
   }
 
+  function fvrLogoSvg(mode = 'panel') {
+    const isLauncher = mode === 'launcher';
+    const cls = isLauncher ? `${APP}-logoSvg launcher` : `${APP}-logoSvg panelLogo`;
+    return `
+      <svg class="${cls}" viewBox="0 0 128 128" role="img" aria-label="Faction Vault Requests logo" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="${APP}-lg1" x1="16" y1="12" x2="108" y2="118" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#ffe3a6"/>
+            <stop offset="0.45" stop-color="#ffb347"/>
+            <stop offset="1" stop-color="#d66a00"/>
+          </linearGradient>
+          <linearGradient id="${APP}-lg2" x1="30" y1="24" x2="94" y2="104" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#2b1a08"/>
+            <stop offset="1" stop-color="#050302"/>
+          </linearGradient>
+          <filter id="${APP}-glow" x="-35%" y="-35%" width="170%" height="170%">
+            <feGaussianBlur stdDeviation="3.2" result="blur"/>
+            <feMerge>
+              <feMergeNode in="blur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+        </defs>
+
+        <path d="M64 8 112 26v38c0 30-19 47-48 58-29-11-48-28-48-58V26L64 8Z"
+              fill="transparent"
+              stroke="url(#${APP}-lg1)"
+              stroke-width="7"
+              stroke-linejoin="round"
+              filter="url(#${APP}-glow)"/>
+
+        <path d="M36 55h56v40H36V55Z"
+              fill="url(#${APP}-lg2)"
+              stroke="url(#${APP}-lg1)"
+              stroke-width="5"
+              stroke-linejoin="round"/>
+
+        <path d="M46 55V43c0-11 8-20 18-20s18 9 18 20v12"
+              fill="none"
+              stroke="url(#${APP}-lg1)"
+              stroke-width="7"
+              stroke-linecap="round"/>
+
+        <circle cx="64" cy="75" r="8" fill="#ffcc7a"/>
+        <path d="M64 82v8" stroke="#ffcc7a" stroke-width="5" stroke-linecap="round"/>
+
+        <text x="64" y="113"
+              text-anchor="middle"
+              font-family="Arial Black, Impact, Arial, sans-serif"
+              font-size="24"
+              font-weight="900"
+              letter-spacing="1.5"
+              fill="#fff1cf"
+              stroke="#3a2108"
+              stroke-width="2"
+              paint-order="stroke">FVR</text>
+      </svg>
+    `;
+  }
+
   function panelHeader(title, subtitle, icon, closeId) {
     const panelHint = subtitle ? `${subtitle} Drag this top bar to move. Resize from the bottom-right corner.` : 'Drag this top bar to move. Resize from the bottom-right corner.';
     return `
       <div class="${APP}-header">
         <div class="${APP}-headRow">
           <div class="${APP}-brand">
-            <div class="${APP}-logo">${icon || '💰'}</div>
+            <div class="${APP}-logo">${fvrLogoSvg('panel')}</div>
             <div>
               <div class="${APP}-title">${title}</div>
               <div class="${APP}-subtitle">${panelHint}</div>
@@ -2416,16 +2875,37 @@
     if (parsed.ok) {
       input.value = parsed.formatted;
       settings.amountInput = input.value;
-      saveSettings();
+      saveRequestFromPanel();
     }
 
     updateAmountPreview();
   }
 
   function fillRequestPanelValues() {
-    $('user').value = settings.userDisplay || '';
-    if ($('discordName')) $('discordName').value = settings.discordName || '';
-    $('amount').value = settings.amountInput || '';
+    const detected = detectCurrentTornUser();
+    const profile = detected ? getProfileForUser(detected) : null;
+
+    if (profile) {
+      $('user').value = profile.userDisplay || displayFromUser(detected);
+      if ($('discordName')) $('discordName').value = profile.discordName || '';
+      $('amount').value = profile.amountInput || '';
+      settings.userDisplay = profile.userDisplay || displayFromUser(detected);
+      settings.discordName = profile.discordName || '';
+      settings.amountInput = profile.amountInput || '';
+      settings.lastDetectedUserId = detected.id;
+      saveSettings();
+    } else {
+      // First time for this Torn user: leave all user-filled fields blank.
+      $('user').value = '';
+      if ($('discordName')) $('discordName').value = '';
+      $('amount').value = '';
+      settings.userDisplay = '';
+      settings.discordName = '';
+      settings.amountInput = '';
+      if (detected?.id) settings.lastDetectedUserId = detected.id;
+      saveSettings();
+    }
+
     updateAmountPreview();
     updateRequestNotificationsPanel();
     updateBalanceDisplay();
@@ -2440,7 +2920,17 @@
     settings.userDisplay = cleanText($('user')?.value || '');
     settings.discordName = normalizeDiscordName($('discordName')?.value || settings.discordName || '');
     settings.amountInput = cleanText($('amount')?.value || '');
-    saveSettings();
+
+    const user = parseUserDisplay(settings.userDisplay);
+    if (user?.id) {
+      saveProfileForUser(user, {
+        userDisplay: settings.userDisplay,
+        discordName: settings.discordName,
+        amountInput: settings.amountInput
+      });
+    } else {
+      saveSettings();
+    }
   }
 
   async function makeRequest() {
@@ -2730,22 +3220,41 @@
   }
 
   function prefillUserNameId(showResultToast = true) {
-    const detected = getCurrentUserDisplay();
+    const detected = detectCurrentTornUser();
 
     if (detected) {
-      if ($('user')) $('user').value = detected;
-      settings.userDisplay = detected;
+      const display = displayFromUser(detected);
+      const profile = getProfileForUser(detected);
+
+      if ($('user')) $('user').value = display;
+      settings.userDisplay = display;
+      settings.lastDetectedUserId = detected.id;
+
+      if (profile) {
+        if ($('discordName')) $('discordName').value = profile.discordName || '';
+        if ($('amount')) $('amount').value = profile.amountInput || '';
+        settings.discordName = profile.discordName || '';
+        settings.amountInput = profile.amountInput || '';
+      }
+
       settings.lastBalanceUserId = '';
       settings.lastBalanceAmount = null;
       settings.lastBalanceCheckedAt = 0;
-      saveSettings();
+
+      saveProfileForUser(detected, {
+        userDisplay: display,
+        discordName: $('discordName')?.value || settings.discordName || '',
+        amountInput: $('amount')?.value || settings.amountInput || ''
+      });
+
+      updateAmountPreview();
       updateBalanceDisplay();
       debounceBalanceCheck();
-      if (showResultToast) showToast('Torn name and ID prefilled.', 'ok');
+      if (showResultToast) showToast(profile ? 'Torn name/ID prefilled and your saved info loaded.' : 'Torn name and ID prefilled. Fill the rest once and it will be remembered for this user.', 'ok');
       return true;
     }
 
-    if (showResultToast) showToast('Could not detect Torn name and ID. Type it manually.', 'warn');
+    if (showResultToast) showToast('Could not detect Torn name and ID. Type it manually once and it will be remembered for this user.', 'warn');
     return false;
   }
 
@@ -2848,25 +3357,28 @@
 
     $('amount').addEventListener('input', () => {
       settings.amountInput = $('amount').value;
+      saveRequestFromPanel();
       updateAmountPreview();
       updateBalanceDisplay();
     });
 
     $('discordName').addEventListener('input', () => {
       settings.discordName = normalizeDiscordName($('discordName').value);
-      saveSettings();
+      saveRequestFromPanel();
     });
 
     $('amount').addEventListener('blur', applyFormattedAmountToInput);
 
     $('user').addEventListener('input', () => {
       settings.userDisplay = cleanText($('user').value);
+      saveRequestFromPanel();
       updateBalanceDisplay();
       debounceBalanceCheck();
     });
 
     $('user').addEventListener('change', () => {
       settings.userDisplay = cleanText($('user').value);
+      saveRequestFromPanel();
       settings.lastBalanceUserId = '';
       settings.lastBalanceAmount = null;
       settings.lastBalanceCheckedAt = 0;
@@ -3294,7 +3806,8 @@
     btn.id = `${APP}-launcher`;
     btn.className = `${APP}-floatingLauncher`;
     btn.type = 'button';
-    btn.textContent = 'Vault Request';
+    btn.innerHTML = fvrLogoSvg('launcher');
+    btn.setAttribute('aria-label', 'Vault Request');
     btn.title = 'Vault Request';
     btn.addEventListener('click', openRequestPanel);
     document.body.appendChild(btn);

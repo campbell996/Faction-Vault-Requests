@@ -23,16 +23,20 @@ Click the button above to install or update the userscript through Tampermonkey.
 ## Features
 
 - Clean RWPH-style dark panels.
+- All script panels use RWPH-style controls:
+  - drag the top bar to move
+  - resize from the bottom-right grip
+  - scroll inside the panel
+  - red **X** close button
+  - saved panel size/position
 - Launcher button uses the RWPH header slot.
 - If the RWPH launcher exists, this button sits beside it.
 - If the RWPH launcher is missing, this button still goes where RWPH would go, before/near Torn's **Faction Warfare** button.
 - Floating launcher is only an emergency fallback if Torn's header slot cannot be found.
-- Panels can be moved by dragging the top bar.
-- Panels can be resized from the bottom-right corner.
-- Panels keep the red **X** close button.
 - Vault Request panel with:
-  - Blank **Name and Torn ID** field by default
+  - Blank **Name and Torn ID** field for first-time users
   - **Prefill** button beside the Name and Torn ID box
+  - Per-user saved request info
   - **Discord name required**
   - Request amount field
   - Faction vault balance status
@@ -40,11 +44,17 @@ Click the button above to install or update the userscript through Tampermonkey.
   - Request Status notifications
   - Pending Requests list
   - User how-to guide
+- Each Torn user fills everything in themselves the first time.
+- After the first time, the script remembers that user's:
+  - Torn name and ID
+  - Discord name
+  - last entered request amount
+- Saved request info is stored per Torn ID in this browser.
 - The Discord name is shown in request, timeout, and fulfilled embeds as `@discordname`.
 - Discord usernames are not real Discord mentions unless you use a Discord user ID. This script asks for Discord name only.
-- **Check Vault Balance** works without a Torn API key when the member balance is visible on the current Torn faction/vault/controls page.
+- **Check Vault Balance** works without a Torn API key only when a clearly labelled member balance is visible on the current Torn faction/vault/controls page.
 - If an API key is saved, the script tries the API first.
-- If no API key is saved, the script scans the visible Torn page for the member row and balance.
+- If no API key is saved, the script scans the visible Torn page for the member row and a nearby/column-labelled **Balance**, **Vault**, **Funds**, or **Available** amount.
 - If the balance cannot be confirmed from the API or the visible page, the request is blocked.
 - Settings panel has two webhook URLs:
   - **Faction Request Webhook** for banker request embeds
@@ -94,7 +104,7 @@ Click the button above to install or update the userscript through Tampermonkey.
 ## How Users Make Requests
 
 1. Open Torn and click the **Vault Request** launcher button.
-2. The **Name and Torn ID** box starts blank.
+2. The **Name and Torn ID** box starts blank the first time.
 3. Click **Prefill** beside the Name and Torn ID box to fill your Torn name and ID, or type it manually. It should look like `Evil_panda_420 [3236276]`.
 4. Enter your **Discord name**. This is required.
 5. Enter the amount you want to request from your faction vault balance.
@@ -114,11 +124,29 @@ Click the button above to install or update the userscript through Tampermonkey.
 15. A leader/banker clicks the Discord button to open Torn faction controls, checks the details, then manually clicks **Give Money** and **Confirm**.
 16. After manually paying, the banker clicks **Mark Request Fulfilled** in the userscript panel. This sends a fulfilled notice to the User Notice Webhook with the banker name and completion timestamp.
 
+## Per-User Saved Info
+
+Each Torn user must fill in their own request details the first time.
+
+Once a user has filled their details, the script remembers them under that Torn ID in this browser. If another Torn user logs in on the same browser, they get their own saved details instead of someone else's.
+
+## Panel Controls
+
+All main panels support the RWPH-style controls:
+
+- Drag the top bar to move the panel.
+- Drag the bottom-right grip to resize the panel.
+- Scroll inside the panel when content is long.
+- Click the red **X** to close.
+- Size and position are remembered locally.
+
 ## No-API Balance Checking
 
-Without an API key, the script can only check a vault balance if that balance is already visible somewhere on the current Torn page. It looks for the matching Torn name/ID and a nearby money/balance value.
+Without an API key, the script can only check a vault balance if that balance is already visible somewhere on the current Torn page.
 
-If the balance is not visible, the script will not guess and will not send the request.
+The fallback now uses a stricter safety check. It looks for the matching Torn name/ID and a clearly labelled **Balance**, **Vault**, **Funds**, or **Available** money value in the same member row/block.
+
+If it sees multiple possible money values or cannot clearly identify the balance, it refuses to use the visible-page fallback. It will not guess and will not send the request.
 
 ## Discord Name Limitation
 
