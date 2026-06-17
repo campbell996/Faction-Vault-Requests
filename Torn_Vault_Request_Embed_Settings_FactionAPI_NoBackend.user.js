@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.14.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.15.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, remove fulfilled requests from pending panel, no Discord resend after admin delete, banker name/id prefill button, cancel unavailable funds button, save banker API key button, all panels save size/position, banker API balance panel, requester balance check removed, fixed panel headers with scrollable body, Torn faction controls page member-balance scanner, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -2050,6 +2050,17 @@
     updateRequestNotificationsPanel();
   }
 
+  function removePendingRequest(requestId) {
+    ensureRequestStores();
+
+    const id = String(requestId || '');
+    if (!id) return;
+
+    settings.pendingRequests = settings.pendingRequests.filter(req => req.id !== id);
+    saveSettings();
+    updateRequestNotificationsPanel();
+  }
+
   function getPendingRequestSummary() {
     ensureRequestStores();
     return settings.pendingRequests
@@ -3738,6 +3749,7 @@
 
   async function markCurrentRequestFulfilled(record, banker) {
     if (hasRequestAction(record.id, 'fulfilled')) {
+      removePendingRequest(record.id);
       throw new Error('This request was already marked fulfilled from this browser. Discord messages are not resent.');
     }
 
@@ -3769,11 +3781,7 @@
 
     markRequestAction(record.id, 'fulfilled', { fulfilledMainEdited: mainEdited });
 
-    updatePendingRequest(record.id, {
-      status: 'fulfilled',
-      completedAt: completedRecord.completedAt,
-      banker
-    });
+    removePendingRequest(record.id);
 
     addRequestNotification(
       'sent',

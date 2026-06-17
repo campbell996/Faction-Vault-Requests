@@ -203,3 +203,10 @@ Discord request/status messages are only sent once. If an admin deletes the orig
 For timeout, fulfilled, or canceled states, the script will try to edit the original Discord request message when a message ID is available. If the edit fails because the message was deleted, the script updates local status only and does not resend that main Discord message.
 
 User notice webhook messages are also tracked locally so the same browser does not repeatedly send the same timeout, fulfilled, or canceled notice for the same request.
+
+
+## Fulfilled Request Cleanup
+
+When a banker marks a request fulfilled, that request is removed from the local pending request list and the panel updates immediately.
+
+Because this is a no-backend script, this cleanup applies to the browser/local storage that performs or knows about the fulfilled action. Removing a pending request from a different user's browser automatically would require a shared backend or Discord bot.
