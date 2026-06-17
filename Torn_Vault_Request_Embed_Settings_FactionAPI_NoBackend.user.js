@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request Embed Settings - Faction API Locked - No Backend
 // @namespace    TornVaultRequestEmbedSettingsNoBackend
-// @version      2.4.0
-// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
+// @version      2.5.0
+// @description  Torn vault request panel with balance checking, Discord embeds, 5-hour timeout tracking, fixed bad View Profile prefill names, safer vault balance detection, transparent FVR logo launcher and panel logos, fixed Torn name/ID prefill, per-user saved request info, RWPH-style panel controls, required Discord name, no-API visible-page balance fallback, second notification webhook, banker completion notices, banker buttons, RWPH-slot launcher, movable/resizable panels, and faction API-locked settings. No backend/server.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -164,8 +164,10 @@
   }
 
   function displayFromUser(user) {
-    if (!user?.id || !user?.name) return '';
-    return `${cleanText(user.name)} [${String(user.id).replace(/[^\d]/g, '')}]`;
+    const id = String(user?.id || '').replace(/[^\d]/g, '');
+    const name = sanitizeDetectedTornName(user?.name || '');
+    if (!id) return '';
+    return name ? `${name} [${id}]` : `[${id}]`;
   }
 
   function getProfileForUser(user) {
@@ -216,6 +218,40 @@
       .replace(/\u00a0/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  function isBadDetectedTornName(name) {
+    const raw = cleanText(name);
+    const lower = raw.toLowerCase();
+
+    if (!raw || raw.length < 2 || raw.length > 40) return true;
+
+    return /^(view profile|profile|view|user profile|player profile|open profile|go to profile|my profile|account|settings|logout|log out|login|log in|home|messages|events|faction|faction warfare|bazaar|items|city|newspaper|forums|wiki|casino|gym|properties|education|crimes|missions|points building|bank|vault|unknown)$/i.test(lower);
+  }
+
+  function sanitizeDetectedTornName(name) {
+    let clean = cleanText(name)
+      .replace(/\s*\[\d+\]\s*$/, '')
+      .replace(/^@+/, '')
+      .replace(/^view\s+profile\s*:?\s*/i, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (isBadDetectedTornName(clean)) return '';
+    return clean;
+  }
+
+  function makeDetectedUser(name, id) {
+    const safeName = sanitizeDetectedTornName(name);
+    const safeId = String(id || '').replace(/[^\d]/g, '');
+
+    if (!safeId) return null;
+
+    return {
+      name: safeName || '',
+      id: safeId,
+      hasRealName: !!safeName
+    };
   }
 
   function formatMoney(amount) {
@@ -417,14 +453,14 @@
         obj.xid;
 
       if (name && id) {
-        return { name: cleanText(name), id: String(id).replace(/[^\d]/g, '') };
+        return makeDetectedUser(name, id);
       }
     }
 
     const globalName = w?.userName || w?.username || w?.playerName;
     const globalId = w?.userID || w?.userId || w?.playerId || w?.player_id || w?.XID;
     if (globalName && globalId) {
-      return { name: cleanText(globalName), id: String(globalId).replace(/[^\d]/g, '') };
+      return makeDetectedUser(globalName, globalId);
     }
 
     return null;
@@ -453,7 +489,7 @@
       const id = firstIsId ? a : b;
       const name = firstIsId ? b : a;
 
-      if (name && id) return { name: cleanText(name), id: String(id).replace(/[^\d]/g, '') };
+      if (id) { const detected = makeDetectedUser(name, id); if (detected?.hasRealName) return detected; }
     }
 
     return null;
@@ -495,8 +531,10 @@
 
     links.sort((a, b) => b.score - a.score);
 
-    if (links[0] && links[0].score > 0) {
-      return { name: links[0].name, id: links[0].id };
+    for (const candidate of links) {
+      if (candidate.score <= 0) continue;
+      const detected = makeDetectedUser(candidate.name, candidate.id);
+      if (detected?.hasRealName) return detected;
     }
 
     return null;
@@ -531,7 +569,7 @@
           const id = firstIsId ? a : b;
           const name = firstIsId ? b : a;
 
-          if (name && id) return { name: cleanText(name), id: String(id).replace(/[^\d]/g, '') };
+          if (id) { const detected = makeDetectedUser(name, id); if (detected?.hasRealName) return detected; }
         }
       }
     }
@@ -558,8 +596,11 @@
       const id = firstIsId ? a : b;
       const name = cleanText(firstIsId ? b : a).replace(/<[^>]*>/g, '');
 
-      if (name && id && !/faction|bank|vault|warfare|points|merits/i.test(name)) {
-        return { name, id: String(id).replace(/[^\d]/g, '') };
+      if (id) {
+        const detected = makeDetectedUser(name, id);
+        if (detected?.hasRealName && !/faction|bank|vault|warfare|points|merits/i.test(detected.name)) {
+          return detected;
+        }
       }
     }
 
@@ -592,11 +633,40 @@
       .filter(x => x.id && x.name && x.name.length <= 40)
       .sort((a, b) => b.score - a.score);
 
-    if (links[0] && links[0].score > 0) {
-      return { name: links[0].name, id: links[0].id };
+    for (const candidate of links) {
+      if (candidate.score <= 0) continue;
+      const detected = makeDetectedUser(candidate.name, candidate.id);
+      if (detected?.hasRealName) return detected;
     }
 
     return null;
+  }
+
+  function findAnyLikelySelfIdOnly() {
+    const links = Array.from(document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="/profiles.php?XID="]'))
+      .map(link => {
+        const href = link.getAttribute('href') || '';
+        const idMatch = href.match(/XID=(\d{3,12})/i);
+        if (!idMatch) return null;
+
+        let score = scoreProfileLink(link);
+        let node = link;
+
+        for (let i = 0; node && i < 7; i++, node = node.parentElement) {
+          const blob = `${node.id || ''} ${node.className || ''}`.toLowerCase();
+          if (/sidebar|top|header|logged|account|user|profile|menu|status|bar/.test(blob)) score += 10;
+          if (/faction|member|bank|vault|war|attack|enemy|list|table/.test(blob)) score -= 10;
+        }
+
+        const rect = link.getBoundingClientRect();
+        if (rect.top >= 0 && rect.top < 170) score += 12;
+
+        return { id: idMatch[1], score };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score);
+
+    return links[0]?.id ? makeDetectedUser('', links[0].id) : null;
   }
 
   function detectCurrentTornUser() {
@@ -608,16 +678,23 @@
       findSelfFromStorage() ||
       findSelfFromHtml();
 
-    if (found?.name && found?.id) {
+    if (found?.id) {
       const clean = {
-        name: cleanText(found.name).replace(/\s*\[\d+\]\s*$/, '').trim(),
-        id: String(found.id).replace(/[^\d]/g, '')
+        name: sanitizeDetectedTornName(found.name || ''),
+        id: String(found.id).replace(/[^\d]/g, ''),
+        hasRealName: !!sanitizeDetectedTornName(found.name || '')
       };
 
-      if (clean.name && clean.id) {
+      if (clean.id && clean.hasRealName) {
         settings.lastDetectedUserId = clean.id;
         return clean;
       }
+    }
+
+    const idOnly = findAnyLikelySelfIdOnly();
+    if (idOnly?.id) {
+      settings.lastDetectedUserId = idOnly.id;
+      return idOnly;
     }
 
     return null;
@@ -3241,16 +3318,20 @@
       settings.lastBalanceAmount = null;
       settings.lastBalanceCheckedAt = 0;
 
-      saveProfileForUser(detected, {
-        userDisplay: display,
-        discordName: $('discordName')?.value || settings.discordName || '',
-        amountInput: $('amount')?.value || settings.amountInput || ''
-      });
+      if (detected.hasRealName || profile) {
+        saveProfileForUser(detected, {
+          userDisplay: display,
+          discordName: $('discordName')?.value || settings.discordName || '',
+          amountInput: $('amount')?.value || settings.amountInput || ''
+        });
+      } else {
+        saveSettings();
+      }
 
       updateAmountPreview();
       updateBalanceDisplay();
       debounceBalanceCheck();
-      if (showResultToast) showToast(profile ? 'Torn name/ID prefilled and your saved info loaded.' : 'Torn name and ID prefilled. Fill the rest once and it will be remembered for this user.', 'ok');
+      if (showResultToast) showToast(detected.hasRealName ? (profile ? 'Torn name/ID prefilled and your saved info loaded.' : 'Torn name and ID prefilled. Fill the rest once and it will be remembered for this user.') : 'Torn ID was detected, but Torn name was not visible. Type your Torn name before the ID once and it will be remembered.', detected.hasRealName ? 'ok' : 'warn');
       return true;
     }
 

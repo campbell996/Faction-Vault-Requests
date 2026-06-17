@@ -36,6 +36,8 @@ Click the button above to install or update the userscript through Tampermonkey.
 - Vault Request panel with:
   - Blank **Name and Torn ID** field for first-time users
   - **Prefill** button beside the Name and Torn ID box
+  - rejects bad labels like `View Profile`
+  - if only the ID can be detected, it fills `[ID]` and asks the user to type their Torn name once
   - Per-user saved request info
   - **Discord name required**
   - Request amount field
