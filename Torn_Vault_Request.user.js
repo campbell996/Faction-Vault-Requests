@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Vault Request - Backend Only Faction API Settings
 // @namespace    TornVaultRequestBackendOnly
-// @version      3.4.0
-// @description  Backend-only Torn vault request helper with RWPH-style Xanax payment orders for faction-wide licences.
+// @version      3.5.0
+// @description  Backend-only Torn vault request helper with rebuilt RWPH-style licence, payment, request, and settings panels.
 // @author       Evil_Panda_420
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -55,7 +55,7 @@
   // Backend-only mode:
   // Deploy the included backend, then replace this with your deployed backend URL before sharing the script.
   // Example: const DEFAULT_BACKEND_URL = 'https://fvr-backend-yourname.onrender.com';
-  const DEFAULT_BACKEND_URL = 'https://gooey-eagle-rentable.ngrok-free.dev';
+  const DEFAULT_BACKEND_URL = 'https://REPLACE-WITH-YOUR-RWPH-STYLE-BACKEND.example.com';
   const DEFAULT_FACTION_WEBHOOK_URL = '';
   const REQUEST_TIMEOUT_MS = 5 * 60 * 60 * 1000;
   const REQUEST_CHECK_MS = 60 * 1000;
@@ -3368,6 +3368,18 @@
         margin-top: 12px;
       }
 
+      .${APP}-twoCol {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      @media (max-width: 560px) {
+        .${APP}-twoCol {
+          grid-template-columns: 1fr;
+        }
+      }
+
       .${APP}-inputBtnRow {
         display: flex;
         gap: 8px;
@@ -4661,58 +4673,65 @@
     panel.id = `${APP}-requestPanel`;
     panel.className = `${APP}-panel`;
     panel.innerHTML = `
-      ${panelHeader('Vault Request', 'Send a request to the faction backend for bankers.', '💰', 'closeRequest')}
+      ${panelHeader('Faction Vault Requests', 'Backend-only licence + request panel.', '💰', 'closeRequest')}
 
       <div class="${APP}-card">
-        <div class="${APP}-cardTitle">Backend Server</div>
+        <div class="${APP}-cardTitle">1. Member API / Faction Licence</div>
         <p class="${APP}-note">
-          Backend URL is automatic in this script: <b>${escapeHtml(getActiveBackendUrl())}</b>
+          Every member saves a limited Torn API key locally to prove their current faction. This is required before making vault requests.
         </p>
-        <p class="${APP}-note">
-          Members do not need Discord webhook URLs. If this says REPLACE-WITH-YOUR-BACKEND-URL, the leader needs to deploy the backend and update the script first.
-        </p>
-      </div>
-
-      <div class="${APP}-card">
-        <div class="${APP}-cardTitle">Faction Licence / API Key</div>
 
         <label for="${APP}-limitedApiKey">Limited Torn API key</label>
-        <input id="${APP}-limitedApiKey" type="password" placeholder="Paste limited API key to prove your faction" autocomplete="off" value="${settings.apiKey ? '********' : ''}" />
+        <input id="${APP}-limitedApiKey" type="password" placeholder="Paste limited Torn API key" autocomplete="off" value="${settings.apiKey ? '********' : ''}" />
 
         <div class="${APP}-row">
-          <button type="button" class="${APP}-btn good" id="${APP}-checkLicence">Save / Check Faction Licence</button>
+          <button type="button" class="${APP}-btn good" id="${APP}-checkLicence">Save API Key / Check Licence</button>
+          <button type="button" class="${APP}-btn danger" id="${APP}-clearMemberApi">Clear API Key</button>
         </div>
 
         <div id="${APP}-licenceStatus" class="${APP}-preview warn">Save a limited API key to prove your faction.</div>
+      </div>
 
-        <hr style="border:0;border-top:1px solid rgba(255,255,255,.12);margin:12px 0;">
-
+      <div class="${APP}-card">
+        <div class="${APP}-cardTitle">2. RWPH-Style Licence Payment</div>
         <p class="${APP}-note">
-          Buy/extend works like RWPH: a faction API member creates a Xanax payment order, the script opens Torn's Xanax item page, and the licence is extended only after the order is applied. Current pricing: 0-25 = 15 days/Xanax, 26-50 = 12, 51-75 = 9, 76-100 = 6.
+          Faction API members can buy or extend the licence for the whole faction. The button creates a pending Xanax payment order and opens Torn's Xanax item page.
         </p>
 
-        <label for="${APP}-licenceFactionId">Faction ID to buy/extend</label>
-        <input id="${APP}-licenceFactionId" type="text" inputmode="numeric" placeholder="Faction ID" autocomplete="off" value="${escapeHtml(settings.factionId || '')}" />
-
-        <label for="${APP}-licenceXanaxCount">Xanax amount sent</label>
-        <input id="${APP}-licenceXanaxCount" type="number" min="1" step="1" value="1" />
+        <div class="${APP}-twoCol">
+          <div>
+            <label for="${APP}-licenceFactionId">Faction ID</label>
+            <input id="${APP}-licenceFactionId" type="text" inputmode="numeric" placeholder="Faction ID" autocomplete="off" value="${escapeHtml(settings.factionId || '')}" />
+          </div>
+          <div>
+            <label for="${APP}-licenceXanaxCount">Xanax amount</label>
+            <input id="${APP}-licenceXanaxCount" type="number" min="1" step="1" value="1" />
+          </div>
+        </div>
 
         <div class="${APP}-row">
           <button type="button" class="${APP}-btn good" id="${APP}-buyExtendLicence">Buy Licence / Extend Licence</button>
         </div>
 
         <label for="${APP}-licenceOrderId">Pending order ID</label>
-        <input id="${APP}-licenceOrderId" type="text" placeholder="Created after Buy / Extend" autocomplete="off" value="${escapeHtml(settings.pendingLicenceOrder?.id || '')}" />
+        <input id="${APP}-licenceOrderId" type="text" placeholder="Order ID appears after buy/extend" autocomplete="off" value="${escapeHtml(settings.pendingLicenceOrder?.id || '')}" />
 
         <div class="${APP}-row">
           <button type="button" class="${APP}-btn good" id="${APP}-applyLicenceOrder">Apply Paid Order</button>
         </div>
 
-        <div id="${APP}-licencePaymentStatus" class="${APP}-preview warn">Buy/extend creates a payment order and opens the Torn Xanax item page.</div>
+        <div id="${APP}-licencePaymentStatus" class="${APP}-preview warn">
+          No payment order yet. Buy/extend creates an order and opens the Torn Xanax item page.
+        </div>
+
+        <p class="${APP}-note">
+          Tiers use current member count when extending: 0-25 = 15 days/Xanax, 26-50 = 12, 51-75 = 9, 76-100 = 6, 101+ = 6.
+          Active licences cover new members until expiry.
+        </p>
       </div>
 
       <div class="${APP}-card">
-        <div class="${APP}-cardTitle">Request Details</div>
+        <div class="${APP}-cardTitle">3. Make Vault Request</div>
 
         <label for="${APP}-user">Name and Torn ID</label>
         <div class="${APP}-inputBtnRow">
@@ -4720,7 +4739,7 @@
           <button type="button" class="${APP}-inlineBtn" id="${APP}-prefillUserInline">Prefill</button>
         </div>
 
-        <label for="${APP}-discordName">Discord name required</label>
+        <label for="${APP}-discordName">Discord name</label>
         <input id="${APP}-discordName" type="text" placeholder="Example: discordname or discord.name" autocomplete="off" />
 
         <label for="${APP}-amount">Request amount</label>
@@ -4728,67 +4747,62 @@
         <div id="${APP}-amountPreview" class="${APP}-preview warn">Enter a request amount.</div>
 
         <button type="button" id="${APP}-make">Make Request</button>
-      </div>
 
-      <div class="${APP}-row">
-        <button type="button" class="${APP}-btn" id="${APP}-settingsBtn">Settings</button>
-        <button type="button" class="${APP}-btn" id="${APP}-refreshUser">Refill Name/ID</button>
+        <p class="${APP}-note">
+          Requests are blocked until your faction licence is active.
+        </p>
       </div>
 
       <div class="${APP}-card">
-        <div class="${APP}-cardTitle">Request Status</div>
-        <div id="${APP}-requestNotifications"></div>
+        <div class="${APP}-cardTitle">4. Status / Tools</div>
+
         <div class="${APP}-row">
-          <button type="button" class="${APP}-btn good" id="${APP}-refreshRequestStatus">Update / Refresh Request Panel</button>
-          <button type="button" class="${APP}-btn" id="${APP}-clearNotices">Clear Notifications</button>
+          <button type="button" class="${APP}-btn good" id="${APP}-refreshRequestStatus">Refresh Status</button>
+          <button type="button" class="${APP}-btn danger" id="${APP}-clearNotices">Clear Notifications</button>
         </div>
-        <p class="${APP}-note">
-          Use <b>Update / Refresh Request Panel</b> after clicking a Discord status link, or any time you want to check whether pending requests were fulfilled, canceled, or timed out.
-        </p>
-        <div class="${APP}-cardTitle" style="margin-top:12px;">Pending Requests</div>
+
+        <div id="${APP}-requestNotifications"></div>
+
+        <hr style="border:0;border-top:1px solid rgba(255,255,255,.12);margin:12px 0;">
+
+        <div class="${APP}-cardTitle">Pending Requests</div>
         <div id="${APP}-pendingRequests"></div>
       </div>
 
-      <div class="${APP}-card">
-        <div class="${APP}-cardTitle">How To Make A Request</div>
-        <p class="${APP}-note">
-          1. Click <b>Prefill</b> beside the <b>Name and Torn ID</b> box, or type it manually. It should look like <b>Evil_panda_420 [3236276]</b>.
-        </p>
-        <p class="${APP}-note">
-          2. Type the amount you want from your faction vault balance. You can use <b>1000000</b>, <b>1m</b>, <b>1b</b>, or <b>1t</b>.
-        </p>
-        <p class="${APP}-note">
-          3. Click <b>Make Request</b>. The request is sent to the faction backend, which posts it to Discord for bankers.
-        </p>
-        <p class="${APP}-note">
-          4. When the banker opens faction controls from Discord, their banker panel checks your current faction vault balance so they can approve or deny manually.
-        </p>
-        <p class="${APP}-note">
-          5. The request stays pending for <b>5 hours</b>. Click <b>Update / Refresh Request Panel</b> to check if pending requests were fulfilled, canceled, or timed out, then refresh notifications.
-        </p>
-        <p class="${APP}-note">
-          6. A banker/leader reviews the Discord embed and manually pays it from Torn faction controls.
-        </p>
-        <p class="${APP}-note">
-          7. After paying, the banker can click <b>Mark Request Fulfilled</b>. The backend updates Discord and sends the user notice.
-        </p>
-        <p class="${APP}-note">
-          Entering your Discord name is required so bankers can identify who the request belongs to in Discord. Webhooks cannot ping a Discord username by name alone.
-        </p>
+      <div class="${APP}-row">
+        <button type="button" class="${APP}-btn" id="${APP}-settingsBtn">Banker / Leader Settings</button>
+        <button type="button" class="${APP}-btn" id="${APP}-refreshUser">Prefill Name/ID</button>
       </div>
 
-      <p class="${APP}-note">
-Backend-only mode: this panel sends requests to the automatic backend URL built into this userscript. Members do not need Discord webhook URLs.
-      </p>
+      <div class="${APP}-card">
+        <div class="${APP}-cardTitle">Backend</div>
+        <p class="${APP}-note">
+          ${escapeHtml(getActiveBackendUrl())}
+        </p>
+      </div>
     `;
 
     document.body.appendChild(panel);
     makePanelMoveResize(panel);
+
     fillRequestPanelValues();
 
     $('closeRequest').addEventListener('click', () => closePanel('requestPanel'));
 
     $('prefillUserInline').addEventListener('click', () => prefillUserNameId(true));
+
+    $('clearMemberApi').addEventListener('click', () => {
+      settings.apiKey = '';
+      settings.factionId = '';
+      settings.factionName = '';
+      settings.licenceInfo = null;
+      settings.pendingLicenceOrder = null;
+      saveSettings();
+      if ($('limitedApiKey')) $('limitedApiKey').value = '';
+      if ($('licenceOrderId')) $('licenceOrderId').value = '';
+      updateLicencePanel();
+      showToast('Saved member API key cleared.', 'ok');
+    });
 
     $('checkLicence').addEventListener('click', async () => {
       const btn = $('checkLicence');
@@ -4806,7 +4820,7 @@ Backend-only mode: this panel sends requests to the automatic backend URL built 
         const liveBtn = $('checkLicence');
         if (liveBtn) {
           liveBtn.disabled = false;
-          liveBtn.textContent = 'Save / Check Faction Licence';
+          liveBtn.textContent = 'Save API Key / Check Licence';
         }
       }
     });
@@ -5166,24 +5180,25 @@ Backend-only mode: this panel sends requests to the automatic backend URL built 
     panel.id = `${APP}-settingsPanel`;
     panel.className = `${APP}-panel`;
     panel.innerHTML = `
-      ${panelHeader('Vault Request Settings', 'Backend and webhook controls for bankers/leaders.', '⚙️', 'closeSettings')}
+      ${panelHeader('Banker / Leader Settings', 'Faction API protected backend controls.', '⚙️', 'closeSettings')}
 
       <div class="${APP}-card">
-        <div class="${APP}-cardTitle">Backend Server Settings</div>
-
+        <div class="${APP}-cardTitle">Backend Permission</div>
         <p class="${APP}-note">
-          Backend URL is automatic in this script: <b>${escapeHtml(getActiveBackendUrl())}</b>
+          Backend URL: <b>${escapeHtml(getActiveBackendUrl())}</b>
         </p>
-
         <p class="${APP}-note">
-          Only members with a Torn API key that has faction API permission can save/delete backend webhooks or change backend settings.
-          This script sends your saved Torn API key to the backend only for permission checking.
+          This panel only opens after a saved Torn API key proves faction API permission. Webhook URLs are saved to the backend only.
         </p>
+      </div>
 
-        <label for="${APP}-webhookUrl">Discord webhook URL for banker requests</label>
+      <div class="${APP}-card">
+        <div class="${APP}-cardTitle">Discord Webhooks</div>
+
+        <label for="${APP}-webhookUrl">Banker request webhook</label>
         <input id="${APP}-webhookUrl" type="password" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" value="" />
 
-        <label for="${APP}-userNotifyWebhookUrl">User notice webhook URL</label>
+        <label for="${APP}-userNotifyWebhookUrl">User notice webhook</label>
         <input id="${APP}-userNotifyWebhookUrl" type="password" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" value="" />
 
         <div class="${APP}-row">
@@ -5192,32 +5207,27 @@ Backend-only mode: this panel sends requests to the automatic backend URL built 
         </div>
 
         <p class="${APP}-note">
-          Webhook URLs are sent to the backend and are not saved in member scripts. Save/delete requires Torn faction API permission.
+          Members never need these webhook URLs.
         </p>
       </div>
 
       <div class="${APP}-card">
-        <div class="${APP}-cardTitle">Embed Message Presets</div>
-        <div class="${APP}-pillRow">
-          ${Object.entries(PRESETS).map(([id, preset]) => `
-            <button type="button" class="${APP}-pill" id="${APP}-preset-${id}">${preset.name}</button>
-          `).join('')}
-        </div>
+        <div class="${APP}-cardTitle">Request Embed Message</div>
 
-        <label for="${APP}-embedTitle">Embed title</label>
+        <label for="${APP}-embedTitle">Request embed title</label>
         <input id="${APP}-embedTitle" type="text" value="${escapeHtml(settings.embedTitle)}" />
 
-        <label for="${APP}-embedDescription">Embed message</label>
+        <label for="${APP}-embedDescription">Request embed message</label>
         <textarea id="${APP}-embedDescription">${escapeHtml(settings.embedDescription)}</textarea>
 
-        <label for="${APP}-embedFooter">Embed footer</label>
+        <label for="${APP}-embedFooter">Request embed footer</label>
         <input id="${APP}-embedFooter" type="text" value="${escapeHtml(settings.embedFooter)}" />
 
-        <label for="${APP}-embedColorPicker">Embed colour</label>
+        <label for="${APP}-embedColorPicker">Request embed colour</label>
         <input id="${APP}-embedColorPicker" type="color" value="#${cleanHex(settings.embedColor)}" />
 
         <p class="${APP}-note">
-          Template codes: <b>{user}</b>, <b>{name}</b>, <b>{id}</b>, <b>{amount}</b>, <b>{raw}</b>, <b>{balance}</b>, <b>{expires}</b>, <b>{expiresFull}</b>, <b>{status}</b>
+          Codes: <b>{user}</b>, <b>{name}</b>, <b>{id}</b>, <b>{amount}</b>, <b>{raw}</b>, <b>{balance}</b>, <b>{expires}</b>, <b>{expiresFull}</b>, <b>{status}</b>
         </p>
       </div>
 
@@ -5249,10 +5259,8 @@ Backend-only mode: this panel sends requests to the automatic backend URL built 
         <input id="${APP}-fulfilledNotifyColor" type="color" value="#${cleanNoticeColor(settings.fulfilledNotifyColor, '3ba55d')}" />
 
         <p class="${APP}-note">
-          Notice template codes: <b>{user}</b>, <b>{tornname}</b>, <b>{name}</b>, <b>{id}</b>, <b>{discord}</b>, <b>{discordName}</b>, <b>{amount}</b>, <b>{balance}</b>, <b>{banker}</b>, <b>{bankerName}</b>, <b>{bankerId}</b>, <b>{timedOutAt}</b>, <b>{completedAt}</b>
+          Codes: <b>{user}</b>, <b>{tornname}</b>, <b>{name}</b>, <b>{id}</b>, <b>{discord}</b>, <b>{discordName}</b>, <b>{amount}</b>, <b>{balance}</b>, <b>{banker}</b>, <b>{bankerName}</b>, <b>{bankerId}</b>, <b>{timedOutAt}</b>, <b>{completedAt}</b>
         </p>
-
-        <div id="${APP}-noticePreview" class="${APP}-embedPreview"></div>
       </div>
 
       <div class="${APP}-card">
@@ -5265,10 +5273,11 @@ Backend-only mode: this panel sends requests to the automatic backend URL built 
         <input id="${APP}-previewAmount" type="text" value="1m" />
 
         <div id="${APP}-embedPreview" class="${APP}-embedPreview"></div>
+        <div id="${APP}-noticePreview" class="${APP}-embedPreview"></div>
 
         <div class="${APP}-row">
-          <button type="button" class="${APP}-btn good" id="${APP}-saveSettings">Save Settings</button>
-          <button type="button" class="${APP}-btn" id="${APP}-sendTest">Send Test Embed</button>
+          <button type="button" class="${APP}-btn good" id="${APP}-saveSettings">Save Message Settings</button>
+          <button type="button" class="${APP}-btn" id="${APP}-sendTest">Send Backend Test</button>
           <button type="button" class="${APP}-btn danger" id="${APP}-lockSettings">Lock Settings</button>
         </div>
       </div>
@@ -5278,11 +5287,6 @@ Backend-only mode: this panel sends requests to the automatic backend URL built 
     makePanelMoveResize(panel);
 
     $('closeSettings').addEventListener('click', () => closePanel('settingsPanel'));
-
-    for (const id of Object.keys(PRESETS)) {
-      const btn = $(`preset-${id}`);
-      if (btn) btn.addEventListener('click', () => applyPreset(id));
-    }
 
     for (const id of ['webhookUrl', 'userNotifyWebhookUrl', 'embedTitle', 'embedDescription', 'embedFooter', 'embedColorPicker', 'timeoutNotifyTitle', 'timeoutNotifyMessage', 'timeoutNotifyFooter', 'timeoutNotifyColor', 'fulfilledNotifyTitle', 'fulfilledNotifyMessage', 'fulfilledNotifyFooter', 'fulfilledNotifyColor', 'previewUser', 'previewAmount']) {
       const el = $(id);
@@ -5343,7 +5347,7 @@ Backend-only mode: this panel sends requests to the automatic backend URL built 
       saveSettingsFromSettingsPanel();
       updateEmbedPreview();
       updateNoticePreview();
-      showToast('Local message settings saved.', 'ok');
+      showToast('Message settings saved locally.', 'ok');
     });
 
     $('sendTest').addEventListener('click', sendTestEmbed);
@@ -5355,7 +5359,6 @@ Backend-only mode: this panel sends requests to the automatic backend URL built 
       showToast('Settings locked.', 'ok');
     });
 
-    updatePresetPills();
     updateEmbedPreview();
     updateNoticePreview();
   }
